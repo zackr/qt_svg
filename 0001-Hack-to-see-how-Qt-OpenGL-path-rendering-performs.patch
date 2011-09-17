@@ -1,0 +1,2862 @@
+From c3f04dbd71bc0ddc3cff5fc2857d16c5782a082b Mon Sep 17 00:00:00 2001
+From: Zack Rusin <zack@kde.org>
+Date: Fri, 16 Sep 2011 15:49:02 -0400
+Subject: [PATCH] Hack to see how Qt OpenGL path rendering performs.
+
+Just wanted to see whether the big discrepancy between
+Qt OpenGL path rendering and nv_path_rendering performance
+seen in the other benchmark was due to different svg implementations
+or rendering techniques. It looks like it's simply the price the
+nv implementation pays for stability and correctness.
+---
+ nvpr_examples/common/showfps.c            |  391 ++++----
+ nvpr_examples/nvpr_svg/GNUmakefile        |  393 ++++----
+ nvpr_examples/nvpr_svg/nvpr_svg_config.h  |  200 ++--
+ nvpr_examples/nvpr_svg/qt/renderer_qt.cpp | 1466 +++++++++++++++--------------
+ nvpr_examples/nvpr_svg/qt/renderer_qt.hpp |  366 ++++----
+ 5 files changed, 1411 insertions(+), 1405 deletions(-)
+
+diff --git a/nvpr_examples/common/showfps.c b/nvpr_examples/common/showfps.c
+index ee0e619..cdd779d 100644
+--- a/nvpr_examples/common/showfps.c
++++ b/nvpr_examples/common/showfps.c
+@@ -1,195 +1,196 @@
+-
+-/* showfps.c - OpenGL code for rendering frames per second */
+-
+-// Copyright (c) NVIDIA Corporation. All rights reserved.
+-
+-#ifdef _WIN32
+-#include <windows.h>  /* for QueryPerformanceCounter */
+-#endif
+-
+-#ifdef __APPLE__
+-#include <GLUT/glut.h>
+-#else
+-#include <GL/glut.h>
+-#endif
+-
+-#include <stdio.h>
+-#include <string.h>
+-#include "showfps.h"
+-
+-static int reportFPS = 1;
+-static GLfloat textColor[3];
+-static int validFPS = 0;
+-
+-static void drawFPS(double fpsRate)
+-{
+-  GLubyte dummy;
+-  char buffer[200], *c;
+-
+-  glMatrixMode(GL_MODELVIEW);
+-  glPushMatrix();
+-    glLoadIdentity();
+-    glMatrixMode(GL_PROJECTION);
+-    glPushMatrix();
+-      glLoadIdentity();
+-      glOrtho(0, 1, 1, 0, -1, 1);
+-      //glDisable(GL_DEPTH_TEST);
+-      glColor3fv(textColor);
+-      glRasterPos2f(1,1);
+-      glBitmap(0, 0, 0, 0, -10*9, 15, &dummy);
+-      if (fpsRate > 0 || !validFPS) {
+-        sprintf(buffer, "fps %0.1f", fpsRate);
+-      } else {
+-        strcpy(buffer, "fps --");
+-      }
+-      for (c = buffer; *c != '\0'; c++)
+-        glutBitmapCharacter(GLUT_BITMAP_9_BY_15, *c);
+-      //glEnable(GL_DEPTH_TEST);
+-    glPopMatrix();
+-    glMatrixMode(GL_MODELVIEW);
+-  glPopMatrix();
+-}
+-
+-#ifdef _WIN32
+-static __int64 freq = 0;
+-#else
+-#include <sys/time.h> /* for gettimeofday and struct timeval */
+-#endif
+-
+-double getElapsedTime()
+-{
+-  static int firstTime = 1;
+-  double secs;
+-#ifdef _WIN32
+-  /* Use Win32 performance counter for high-accuracy timing. */
+-  static __int64 startTime = 0;  /* Timer count for last fps update */
+-  __int64 newCount;
+-
+-  if (!freq) {
+-    QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
+-  }
+-
+-  /* Update the frames per second count if we have gone past at least
+-     a second since the last update. */
+-
+-  QueryPerformanceCounter((LARGE_INTEGER*) &newCount);
+-  if (firstTime) {
+-    startTime = newCount;
+-    firstTime = 0;
+-  }
+-  secs = (double) (newCount - startTime) / (double)freq;
+-#else
+-  /* Use BSD 4.2 gettimeofday system call for high-accuracy timing. */
+-  static struct timeval start_tp;
+-  struct timeval new_tp;
+-  
+-  gettimeofday(&new_tp, NULL);
+-  if (firstTime) {
+-    start_tp.tv_sec = new_tp.tv_sec;
+-    start_tp.tv_usec = new_tp.tv_usec;
+-    firstTime = 0;
+-  }
+-  secs = (new_tp.tv_sec - start_tp.tv_sec) + (new_tp.tv_usec - start_tp.tv_usec)/1000000.0;
+-#endif
+-  return secs;
+-}
+-
+-static double lastFpsRate = 0;
+-static int frameCount = 0;     /* Number of frames for timing */
+-#ifdef _WIN32
+-/* Use Win32 performance counter for high-accuracy timing. */
+-static __int64 lastCount = 0;  /* Timer count for last fps update */
+-#else
+-static struct timeval last_tp = { 0, 0 };
+-#endif
+-
+-void invalidateFPS()
+-{
+-    validFPS = 0;
+-}
+-
+-void restartFPS()
+-{
+-    frameCount = 0;
+-    validFPS = 1;
+-    lastFpsRate = -1;
+-#ifdef _WIN32
+-    QueryPerformanceCounter((LARGE_INTEGER*) &lastCount);
+-#else
+-    gettimeofday(&last_tp, NULL);
+-#endif
+-}
+-
+-double just_handleFPS(void)
+-{
+-#ifdef _WIN32
+-  /* Use Win32 performance counter for high-accuracy timing. */
+-  __int64 newCount;
+-
+-  if (!freq) {
+-    QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
+-  }
+-
+-  /* Update the frames per second count if we have gone past at least
+-     a second since the last update. */
+-
+-  QueryPerformanceCounter((LARGE_INTEGER*) &newCount);
+-  frameCount++;
+-  if ((newCount - lastCount) > freq) {
+-    double fpsRate;
+-
+-    fpsRate = (double) (freq * (__int64) frameCount)  / (double) (newCount - lastCount);
+-    lastCount = newCount;
+-    frameCount = 0;
+-    lastFpsRate = fpsRate;
+-  }
+-#else
+-  /* Use BSD 4.2 gettimeofday system call for high-accuracy timing. */
+-  struct timeval new_tp;
+-  double secs;
+-  
+-  gettimeofday(&new_tp, NULL);
+-  secs = (new_tp.tv_sec - last_tp.tv_sec) + (new_tp.tv_usec - last_tp.tv_usec)/1000000.0;
+-  if (secs >= 1.0) {
+-    lastFpsRate = frameCount / secs;
+-    last_tp = new_tp;
+-    frameCount = 0;
+-  }
+-  frameCount++;
+-#endif
+-  if (!validFPS) {
+-    restartFPS();
+-  }
+-  return lastFpsRate;
+-}
+-
+-double handleFPS(void)
+-{
+-  double lastFpsRate = just_handleFPS();
+-  if (reportFPS) {
+-    drawFPS(lastFpsRate);
+-  }
+-  return lastFpsRate;
+-}
+-
+-void colorFPS(float r, float g, float b)
+-{
+-  textColor[0] = r;
+-  textColor[1] = g;
+-  textColor[2] = b;
+-}
+-
+-void toggleFPS(void)
+-{
+-  reportFPS = !reportFPS;
+-}
+-
+-void enableFPS(void)
+-{
+-  reportFPS = 1;
+-}
+-
+-void disableFPS(void)
+-{
+-  reportFPS = 0;
+-}
++
++/* showfps.c - OpenGL code for rendering frames per second */
++
++// Copyright (c) NVIDIA Corporation. All rights reserved.
++
++#ifdef _WIN32
++#include <windows.h>  /* for QueryPerformanceCounter */
++#endif
++
++#ifdef __APPLE__
++#include <GLUT/glut.h>
++#else
++#include <GL/glut.h>
++#endif
++
++#include <stdio.h>
++#include <string.h>
++#include "showfps.h"
++
++static int reportFPS = 1;
++static GLfloat textColor[3];
++static int validFPS = 0;
++
++static void drawFPS(double fpsRate)
++{
++  GLubyte dummy;
++  char buffer[200], *c;
++
++  glMatrixMode(GL_MODELVIEW);
++  glPushMatrix();
++    glLoadIdentity();
++    glMatrixMode(GL_PROJECTION);
++    glPushMatrix();
++      glLoadIdentity();
++      glOrtho(0, 1, 1, 0, -1, 1);
++      //glDisable(GL_DEPTH_TEST);
++      glColor3fv(textColor);
++      glRasterPos2f(1,1);
++      glBitmap(0, 0, 0, 0, -10*9, 15, &dummy);
++      if (fpsRate > 0 || !validFPS) {
++        sprintf(buffer, "fps %0.1f", fpsRate);
++      } else {
++        strcpy(buffer, "fps --");
++      }
++      for (c = buffer; *c != '\0'; c++)
++        glutBitmapCharacter(GLUT_BITMAP_9_BY_15, *c);
++      //glEnable(GL_DEPTH_TEST);
++    glPopMatrix();
++    glMatrixMode(GL_MODELVIEW);
++  glPopMatrix();
++  printf("%s\n", buffer);
++}
++
++#ifdef _WIN32
++static __int64 freq = 0;
++#else
++#include <sys/time.h> /* for gettimeofday and struct timeval */
++#endif
++
++double getElapsedTime()
++{
++  static int firstTime = 1;
++  double secs;
++#ifdef _WIN32
++  /* Use Win32 performance counter for high-accuracy timing. */
++  static __int64 startTime = 0;  /* Timer count for last fps update */
++  __int64 newCount;
++
++  if (!freq) {
++    QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
++  }
++
++  /* Update the frames per second count if we have gone past at least
++     a second since the last update. */
++
++  QueryPerformanceCounter((LARGE_INTEGER*) &newCount);
++  if (firstTime) {
++    startTime = newCount;
++    firstTime = 0;
++  }
++  secs = (double) (newCount - startTime) / (double)freq;
++#else
++  /* Use BSD 4.2 gettimeofday system call for high-accuracy timing. */
++  static struct timeval start_tp;
++  struct timeval new_tp;
++  
++  gettimeofday(&new_tp, NULL);
++  if (firstTime) {
++    start_tp.tv_sec = new_tp.tv_sec;
++    start_tp.tv_usec = new_tp.tv_usec;
++    firstTime = 0;
++  }
++  secs = (new_tp.tv_sec - start_tp.tv_sec) + (new_tp.tv_usec - start_tp.tv_usec)/1000000.0;
++#endif
++  return secs;
++}
++
++static double lastFpsRate = 0;
++static int frameCount = 0;     /* Number of frames for timing */
++#ifdef _WIN32
++/* Use Win32 performance counter for high-accuracy timing. */
++static __int64 lastCount = 0;  /* Timer count for last fps update */
++#else
++static struct timeval last_tp = { 0, 0 };
++#endif
++
++void invalidateFPS()
++{
++    validFPS = 0;
++}
++
++void restartFPS()
++{
++    frameCount = 0;
++    validFPS = 1;
++    lastFpsRate = -1;
++#ifdef _WIN32
++    QueryPerformanceCounter((LARGE_INTEGER*) &lastCount);
++#else
++    gettimeofday(&last_tp, NULL);
++#endif
++}
++
++double just_handleFPS(void)
++{
++#ifdef _WIN32
++  /* Use Win32 performance counter for high-accuracy timing. */
++  __int64 newCount;
++
++  if (!freq) {
++    QueryPerformanceFrequency((LARGE_INTEGER*) &freq);
++  }
++
++  /* Update the frames per second count if we have gone past at least
++     a second since the last update. */
++
++  QueryPerformanceCounter((LARGE_INTEGER*) &newCount);
++  frameCount++;
++  if ((newCount - lastCount) > freq) {
++    double fpsRate;
++
++    fpsRate = (double) (freq * (__int64) frameCount)  / (double) (newCount - lastCount);
++    lastCount = newCount;
++    frameCount = 0;
++    lastFpsRate = fpsRate;
++  }
++#else
++  /* Use BSD 4.2 gettimeofday system call for high-accuracy timing. */
++  struct timeval new_tp;
++  double secs;
++  
++  gettimeofday(&new_tp, NULL);
++  secs = (new_tp.tv_sec - last_tp.tv_sec) + (new_tp.tv_usec - last_tp.tv_usec)/1000000.0;
++  if (secs >= 1.0) {
++    lastFpsRate = frameCount / secs;
++    last_tp = new_tp;
++    frameCount = 0;
++  }
++  frameCount++;
++#endif
++  if (!validFPS) {
++    restartFPS();
++  }
++  return lastFpsRate;
++}
++
++double handleFPS(void)
++{
++  double lastFpsRate = just_handleFPS();
++  if (reportFPS) {
++    drawFPS(lastFpsRate);
++  }
++  return lastFpsRate;
++}
++
++void colorFPS(float r, float g, float b)
++{
++  textColor[0] = r;
++  textColor[1] = g;
++  textColor[2] = b;
++}
++
++void toggleFPS(void)
++{
++  reportFPS = !reportFPS;
++}
++
++void enableFPS(void)
++{
++  reportFPS = 1;
++}
++
++void disableFPS(void)
++{
++  reportFPS = 0;
++}
+diff --git a/nvpr_examples/nvpr_svg/GNUmakefile b/nvpr_examples/nvpr_svg/GNUmakefile
+index 12d44d0..22001d3 100644
+--- a/nvpr_examples/nvpr_svg/GNUmakefile
++++ b/nvpr_examples/nvpr_svg/GNUmakefile
+@@ -1,196 +1,197 @@
+-
+-TARGETS = nvpr_svg
+-
+-UNAME := $(shell uname)
+-
+-ifeq ($(UNAME), Darwin)
+-  GLEW  := /Developer/NVIDIA/Cg/examples/OpenGL/glew
+-else
+-  GLEW  := ../glew
+-endif
+-
+-SKIA  := ../skia
+-
+-CG4CPP  := ../cg4cpp
+-BOOST   := ../boost-1.38.0
+-
+-GS_SIMPLE_C = \
+-  ../common/showfps.c \
+-  stb/stb_image.c \
+-  ../glew/src/glew.c \
+-  ../common/nvpr_init.c \
+-  ../common/sRGB_math.c \
+-  ../common/request_vsync.c \
+-  $(NULL)
+-
+-GS_SIMPLE_CPP = \
+-  color_names.cpp \
+-  freetype2_loader.cpp \
+-  nvpr_svg.cpp \
+-  glmatrix.cpp \
+-  path.cpp \
+-  path_data.cpp \
+-  path_process.cpp \
+-  path_parse_svg.cpp \
+-  scene.cpp \
+-  renderer.cpp \
+-  ActiveControlPoint.cpp \
+-  sRGB_vector.cpp \
+-  stc/renderer_stc.cpp  \
+-  stc/scene_stc.cpp \
+-  openvg/renderer_openvg.cpp  \
+-  openvg/scene_openvg.cpp \
+-  tinyxml/tinystr.cpp \
+-  tinyxml/tinyxml.cpp \
+-  tinyxml/tinyxmlerror.cpp \
+-  tinyxml/tinyxmlparser.cpp \
+-  svg_files.cpp \
+-  svg_loader.cpp \
+-  nvpr/renderer_nvpr.cpp \
+-  nvpr/renderer_nvpr_path.cpp \
+-  nvpr/renderer_nvpr_shader.cpp \
+-  ../common/dsa_emulate.cpp \
+-  cairo/renderer_cairo.cpp \
+-  cairo/scene_cairo.cpp \
+-  qt/renderer_qt.cpp \
+-  qt/scene_qt.cpp \
+-  skia/renderer_skia.cpp \
+-  skia/scene_skia.cpp \
+-  d2d/init_d2d.cpp \
+-  d2d/renderer_d2d.cpp \
+-  d2d/scene_d2d.cpp \
+-  ../cg4cpp/src/inverse.cpp \
+-  $(NULL)
+-
+-GS_SIMPLE_OBJS = $(GS_SIMPLE_C:.c=.o) $(GS_SIMPLE_CPP:.cpp=.o)
+-
+-OBJS = $(GS_SIMPLE_OBJS)
+-
+-#DEBUG_OPT = -g -DSK_DEBUG
+-OPT_OPT = -O2 -DNDEBUG
+-
+-CC         = gcc
+-CXX        = g++
+-CFLAGS     += -Wall $(DEBUG_OPT) $(OPT_OPT)
+-CXXFLAGS   += -Wall $(DEBUG_OPT) $(OPT_OPT)
+-CFLAGS     += -DGLEW_STATIC
+-CFLAGS     += -I.
+-CXXFLAGS   += -I.
+-CFLAGS     += -I../common
+-CXXFLAGS   += -I../common
+-CXXFLAGS   += -I../boost-1.38.0
+-CXXFLAGS   += -I../openvg-1_1-ri/ri_package/ri/include
+-CFLAGS     += -Iinclude
+-CXXFLAGS   += -Iinclude
+-CXXFLAGS   += -Itinyxml
+-CFLAGS     += -I"$(GLEW)/include"
+-CXXFLAGS   += -I"$(GLEW)/include"
+-CFLAGS     += -I"$(CG4CPP)/include"
+-CXXFLAGS   += -I"$(CG4CPP)/include"
+-CFLAGS     += -I"$(BOOST)"
+-CXXFLAGS   += -I"$(BOOST)"
+-CXXFLAGS   += -I"$(SKIA)/include/core" -I"$(SKIA)/include/config" -I"$(SKIA)/include/effects" -I"$(SKIA)/src/core"
+-CXXFLAGS   += -DGLEW_STATIC
+-ifdef CG_INC_PATH
+-  CFLAGS   += -I"$(CG_INC_PATH)"
+-  CXXFLAGS += -I"$(CG_INC_PATH)"
+-endif
+-
+-ifdef CG_LIB_PATH
+-    CLINKFLAGS += -L"$(CG_LIB_PATH)"
+-endif
+-
+-DEPEND_FILES = $(OBJS:%.o=%.d)
+-DEPEND_OPTS = -MMD
+-
+-ifeq ($(UNAME), Darwin)
+-  #CLINKFLAGS += -L/usr/X11/lib
+-  CLINKFLAGS += -L/Developer/SDKs/MacOSX10.5.sdk/usr/X11/lib
+-  CLINKFLAGS += -lfreetype
+-  CLINKFLAGS += -framework Cg
+-  CLINKFLAGS += -framework GLUT
+-  CLINKFLAGS += -framework OpenGL
+-  CXXFLAGS   += -I/usr/X11/include
+-  CXXFLAGS   += -I/usr/X11/include/freetype2
+-  CLINKFLAGS += -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+-  CFLAGS     += $(DEPEND_OPTS)
+-  CXXFLAGS   += $(DEPEND_OPTS)
+-else
+-  ifeq ($(findstring CYGWIN, $(UNAME)), CYGWIN)
+-    CFLAGS     += -D_WIN32
+-    CXXFLAGS   += -D_WIN32
+-    CFLAGS     += -DGLUT_DISABLE_ATEXIT_HACK
+-    CXXFLAGS   += -DGLUT_DISABLE_ATEXIT_HACK
+-
+-    CFLAGS     += -I"C:/Program Files/NVIDIA Corporation/Cg/include"
+-    CXXFLAGS   += -I"C:/Program Files/NVIDIA Corporation/Cg/include"
+-    CLINKFLAGS += -L"C:/Program Files/NVIDIA Corporation/Cg/lib"
+-    # XXX assume Visual Studio built Release/cg4cpp.lib
+-    CLINKFLAGS += -LRelease
+-    CLINKFLAGS += -lcg4cpp
+-    CLINKFLAGS += -lcgGL -lcg
+-    CLINKFLAGS += -lglut32
+-    CLINKFLAGS += -lglu32 -lopengl32 -lm
+-    EXE = .exe
+-  else
+-    ifeq ($(UNAME), SunOS)
+-      CLINKFLAGS += -L"$(SKIA)/out"
+-      CLINKFLAGS += -lskia
+-      CLINKFLAGS += -lcairo
+-      CLINKFLAGS += -lfreetype
+-      CLINKFLAGS += -lCgGL -lCg
+-      CLINKFLAGS += -L/usr/X11R6/lib64 -L/usr/X11R6/lib
+-      CLINKFLAGS += -lglut -lXi -lXmu -lX11 -lm
+-      CLINKFLAGS += -lGLU -lGL
+-      CLINKFLAGS += -lpthread
+-      CXXFLAGS   += -I/usr/include/cairo
+-    else
+-      CLINKFLAGS += -L"$(SKIA)/out"
+-      CLINKFLAGS += -lskia
+-      CLINKFLAGS += -lcairo
+-#      CLINKFLAGS += -lQtGui -lQtCore
+-      CLINKFLAGS += -lfreetype
+-      CLINKFLAGS += -lCgGL -lCg
+-      CLINKFLAGS += -L/usr/X11R6/lib64 -L/usr/X11R6/lib
+-      CLINKFLAGS += -lglut -lXi -lXmu -lX11 -lm
+-      CLINKFLAGS += -lGLU -lGL
+-      CLINKFLAGS += -lpthread
+-      CFLAGS     += $(DEPEND_OPTS)
+-      CXXFLAGS   += $(DEPEND_OPTS)
+-      CXXFLAGS   += -I/usr/include/cairo
+-      CXXFLAGS   += -I/usr/include/qt4
+-      CXXFLAGS   += -I/usr/include/qt4/QtCore
+-      CXXFLAGS   += -I/usr/include/qt4/QtGui
+-      CXXFLAGS   += -I/usr/include/QtCore
+-      CXXFLAGS   += -I/usr/include/QtGui
+-    endif
+-  endif
+-endif
+-
+-BINARIES := $(TARGETS:=$(EXE))
+-
+-all: $(BINARIES)
+-
+-run: $(TARGET)$(EXE)
+-	./$(TARGET)$(EXE)
+-
+-SKIA_LIB = $(SKIA)/out/libskia.a
+-
+-LIBRARIES_TO_BUILD = $(SKIA_LIB)
+-
+-$(SKIA_LIB):
+-	$(MAKE) -C '$(SKIA)' -f Makefile
+-
+-nvpr_svg$(EXE): $(LIBRARIES_TO_BUILD) $(GS_SIMPLE_OBJS)
+-	$(CXX) $(CFLAGS) $(GS_SIMPLE_OBJS) -o $@ $(CLINKFLAGS)
+-
+-clean:
+-	$(RM) $(BINARIES) $(GS_SIMPLE_OBJS) 
+-	$(MAKE) -C '$(SKIA)' -f Makefile clean
+-
+-clobber: clean
+-	$(RM) *.bak *.o *~ $(DEPEND_FILES)
+-
+-.PHONY: all run clean clobber run
+-
+-sinclude $(DEPEND_FILES)
++
++TARGETS = nvpr_svg
++
++UNAME := $(shell uname)
++
++ifeq ($(UNAME), Darwin)
++  GLEW  := /Developer/NVIDIA/Cg/examples/OpenGL/glew
++else
++  GLEW  := ../glew
++endif
++
++SKIA  := ../skia
++
++CG4CPP  := ../cg4cpp
++BOOST   := ../boost-1.38.0
++
++GS_SIMPLE_C = \
++  ../common/showfps.c \
++  stb/stb_image.c \
++  ../glew/src/glew.c \
++  ../common/nvpr_init.c \
++  ../common/sRGB_math.c \
++  ../common/request_vsync.c \
++  $(NULL)
++
++GS_SIMPLE_CPP = \
++  color_names.cpp \
++  freetype2_loader.cpp \
++  nvpr_svg.cpp \
++  glmatrix.cpp \
++  path.cpp \
++  path_data.cpp \
++  path_process.cpp \
++  path_parse_svg.cpp \
++  scene.cpp \
++  renderer.cpp \
++  ActiveControlPoint.cpp \
++  sRGB_vector.cpp \
++  stc/renderer_stc.cpp  \
++  stc/scene_stc.cpp \
++  openvg/renderer_openvg.cpp  \
++  openvg/scene_openvg.cpp \
++  tinyxml/tinystr.cpp \
++  tinyxml/tinyxml.cpp \
++  tinyxml/tinyxmlerror.cpp \
++  tinyxml/tinyxmlparser.cpp \
++  svg_files.cpp \
++  svg_loader.cpp \
++  nvpr/renderer_nvpr.cpp \
++  nvpr/renderer_nvpr_path.cpp \
++  nvpr/renderer_nvpr_shader.cpp \
++  ../common/dsa_emulate.cpp \
++  cairo/renderer_cairo.cpp \
++  cairo/scene_cairo.cpp \
++  qt/renderer_qt.cpp \
++  qt/scene_qt.cpp \
++  skia/renderer_skia.cpp \
++  skia/scene_skia.cpp \
++  d2d/init_d2d.cpp \
++  d2d/renderer_d2d.cpp \
++  d2d/scene_d2d.cpp \
++  ../cg4cpp/src/inverse.cpp \
++  $(NULL)
++
++GS_SIMPLE_OBJS = $(GS_SIMPLE_C:.c=.o) $(GS_SIMPLE_CPP:.cpp=.o)
++
++OBJS = $(GS_SIMPLE_OBJS)
++
++DEBUG_OPT = -g
++#OPT_OPT = -O2 -DNDEBUG
++
++CC         = gcc
++CXX        = g++
++CFLAGS     += -Wall $(DEBUG_OPT) $(OPT_OPT)
++CXXFLAGS   += -Wall $(DEBUG_OPT) $(OPT_OPT)
++CFLAGS     += -DGLEW_STATIC
++CFLAGS     += -I.
++CXXFLAGS   += -I.
++CFLAGS     += -I../common
++CXXFLAGS   += -I../common
++CXXFLAGS   += -I../boost-1.38.0
++CXXFLAGS   += -I../openvg-1_1-ri/ri_package/ri/include
++CFLAGS     += -Iinclude
++CXXFLAGS   += -Iinclude
++CXXFLAGS   += -Itinyxml
++CFLAGS     += -I"$(GLEW)/include"
++CXXFLAGS   += -I"$(GLEW)/include"
++CFLAGS     += -I"$(CG4CPP)/include"
++CXXFLAGS   += -I"$(CG4CPP)/include"
++CFLAGS     += -I"$(BOOST)"
++CXXFLAGS   += -I"$(BOOST)"
++CXXFLAGS   += -I"$(SKIA)/include/core" -I"$(SKIA)/include/config" -I"$(SKIA)/include/effects" -I"$(SKIA)/src/core"
++CXXFLAGS   += -DGLEW_STATIC
++ifdef CG_INC_PATH
++  CFLAGS   += -I"$(CG_INC_PATH)"
++  CXXFLAGS += -I"$(CG_INC_PATH)"
++endif
++
++ifdef CG_LIB_PATH
++    CLINKFLAGS += -L"$(CG_LIB_PATH)"
++endif
++
++DEPEND_FILES = $(OBJS:%.o=%.d)
++DEPEND_OPTS = -MMD
++
++ifeq ($(UNAME), Darwin)
++  #CLINKFLAGS += -L/usr/X11/lib
++  CLINKFLAGS += -L/Developer/SDKs/MacOSX10.5.sdk/usr/X11/lib
++  CLINKFLAGS += -lfreetype
++  CLINKFLAGS += -framework Cg
++  CLINKFLAGS += -framework GLUT
++  CLINKFLAGS += -framework OpenGL
++  CXXFLAGS   += -I/usr/X11/include
++  CXXFLAGS   += -I/usr/X11/include/freetype2
++  CLINKFLAGS += -Wl,-dylib_file,/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib:/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
++  CFLAGS     += $(DEPEND_OPTS)
++  CXXFLAGS   += $(DEPEND_OPTS)
++else
++  ifeq ($(findstring CYGWIN, $(UNAME)), CYGWIN)
++    CFLAGS     += -D_WIN32
++    CXXFLAGS   += -D_WIN32
++    CFLAGS     += -DGLUT_DISABLE_ATEXIT_HACK
++    CXXFLAGS   += -DGLUT_DISABLE_ATEXIT_HACK
++
++    CFLAGS     += -I"C:/Program Files/NVIDIA Corporation/Cg/include"
++    CXXFLAGS   += -I"C:/Program Files/NVIDIA Corporation/Cg/include"
++    CLINKFLAGS += -L"C:/Program Files/NVIDIA Corporation/Cg/lib"
++    # XXX assume Visual Studio built Release/cg4cpp.lib
++    CLINKFLAGS += -LRelease
++    CLINKFLAGS += -lcg4cpp
++    CLINKFLAGS += -lcgGL -lcg
++    CLINKFLAGS += -lglut32
++    CLINKFLAGS += -lglu32 -lopengl32 -lm
++    EXE = .exe
++  else
++    ifeq ($(UNAME), SunOS)
++      CLINKFLAGS += -L"$(SKIA)/out"
++      CLINKFLAGS += -lskia
++      CLINKFLAGS += -lcairo
++      CLINKFLAGS += -lfreetype
++      CLINKFLAGS += -lCgGL -lCg
++      CLINKFLAGS += -L/usr/X11R6/lib64 -L/usr/X11R6/lib
++      CLINKFLAGS += -lglut -lXi -lXmu -lX11 -lm
++      CLINKFLAGS += -lGLU -lGL
++      CLINKFLAGS += -lpthread
++      CXXFLAGS   += -I/usr/include/cairo
++    else
++      CLINKFLAGS += -L"$(SKIA)/out"
++      CLINKFLAGS += -lskia
++      CLINKFLAGS += -lcairo
++      CLINKFLAGS += -lQtGui -lQtCore -lQtOpenGL
++      CLINKFLAGS += -lfreetype
++      CLINKFLAGS += -lCgGL -lCg
++      CLINKFLAGS += -L/usr/X11R6/lib64 -L/usr/X11R6/lib
++      CLINKFLAGS += -lglut -lXi -lXmu -lX11 -lm
++      CLINKFLAGS += -lGLU -lGL
++      CLINKFLAGS += -lpthread
++      CFLAGS     += $(DEPEND_OPTS)
++      CXXFLAGS   += $(DEPEND_OPTS)
++      CXXFLAGS   += -I/usr/include/cairo
++      CXXFLAGS   += -I/usr/include/qt4
++      CXXFLAGS   += -I/usr/include/qt4/QtCore
++      CXXFLAGS   += -I/usr/include/qt4/QtGui
++      CXXFLAGS   += -I/usr/include/qt4/QtOpenGL
++      CXXFLAGS   += -I/usr/include/QtCore
++      CXXFLAGS   += -I/usr/include/QtGui
++    endif
++  endif
++endif
++
++BINARIES := $(TARGETS:=$(EXE))
++
++all: $(BINARIES)
++
++run: $(TARGET)$(EXE)
++	./$(TARGET)$(EXE)
++
++SKIA_LIB = $(SKIA)/out/libskia.a
++
++LIBRARIES_TO_BUILD = $(SKIA_LIB)
++
++$(SKIA_LIB):
++	$(MAKE) -C '$(SKIA)' -f Makefile
++
++nvpr_svg$(EXE): $(LIBRARIES_TO_BUILD) $(GS_SIMPLE_OBJS)
++	$(CXX) $(CFLAGS) $(GS_SIMPLE_OBJS) -o $@ $(CLINKFLAGS)
++
++clean:
++	$(RM) $(BINARIES) $(GS_SIMPLE_OBJS) 
++	$(MAKE) -C '$(SKIA)' -f Makefile clean
++
++clobber: clean
++	$(RM) *.bak *.o *~ $(DEPEND_FILES)
++
++.PHONY: all run clean clobber run
++
++sinclude $(DEPEND_FILES)
+diff --git a/nvpr_examples/nvpr_svg/nvpr_svg_config.h b/nvpr_examples/nvpr_svg/nvpr_svg_config.h
+index ccadf5c..9ebd49e 100644
+--- a/nvpr_examples/nvpr_svg/nvpr_svg_config.h
++++ b/nvpr_examples/nvpr_svg/nvpr_svg_config.h
+@@ -1,100 +1,100 @@
+-
+-/* nvpr_svg_config.h - configure renderers for path rendering test bed */
+-
+-// Copyright (c) NVIDIA Corporation. All rights reserved.
+-
+-#ifndef __nvpr_svg_config_h__
+-#define __nvpr_svg_config_h__
+-
+-#if defined(_MSC_VER) && (_MSC_VER >= 1020)
+-# pragma once
+-#endif
+-
+-// FreeType2
+-// http://www.freetype.org/
+-#define USE_FREETYPE2 1
+-
+-// Khronos OpenVG 1.1 royalty-free, cross-platform API is a low-level hardware acceleration interface for vector graphics
+-// http://www.khronos.org/openvg/
+-// http://www.khronos.org/registry/vg/specs/openvg-1.1.pdf
+-#define USE_OPENVG 1
+-
+-#ifdef _WIN32
+-// Microsoft's Direct2D API introduced with Windows Vista (not supported on XP)
+-// http://msdn.microsoft.com/en-us/library/dd370990%28VS.85%29.aspx
+-// http://msdn.microsoft.com/en-us/library/dd372337%28v=VS.85%29.aspx
+-// http://msdn.microsoft.com/en-us/library/dd372349%28v=VS.85%29.aspx
+-# define USE_D2D   1
+-#else
+-# define USE_D2D   0
+-#endif
+-
+-// Cairo Graphics, an open source 2D graphics library for multiple output devices
+-// http://cairographics.org/
+-// http://cairographics.org/manual/
+-#define USE_CAIRO  1
+-
+-// Nokia's Qt platform includes the Arthur Paint System
+-// http://doc.qt.nokia.com/4.6/qt4-arthur.html
+-// http://doc.qt.nokia.com/4.6/qpainter.html
+-#define USE_QT     1
+-
+-// NVIDIA's NV_path_rendering GPU-accelerated path rendering system
+-// https://p4viewer.nvidia.com/getfile///sw/docs/gpu/drivers/OpenGL/specs/proposed/GL_NV_path_rendering.txt
+-#define USE_NVPR   1
+-
+-// Google's Skia 2D Graphics Library used by Google's Chrome web browser and Android operating system
+-// http://code.google.com/p/skia/
+-#define USE_SKIA   1
+-
+-#if defined(__APPLE__)
+-// It would probably be easy enough to support Skia and OpenVG (since their source is in the tree)
+-// Supporting Cairo would be easy too if Cairo's source is in the tree
+-// Qt might be more work (maybe not)
+-# undef USE_D2D
+-# define USE_D2D    0
+-# undef USE_CAIRO
+-# define USE_CAIRO  0
+-# undef USE_QT
+-# define USE_QT     0
+-# undef USE_OPENVG
+-# define USE_OPENVG 0
+-# undef USE_NVPR
+-# define USE_NVPR   0
+-# undef USE_SKIA
+-# define USE_SKIA   0
+-#endif
+-
+-#if defined(linux)
+-// It would probably be easy enough to support Skia and OpenVG (since their source is in the tree)
+-// Supporting Cairo would be easy too if Cairo's source is in the tree
+-// Qt might be more work (maybe not)
+-# undef USE_D2D
+-# define USE_D2D    0
+-//# undef USE_CAIRO
+-//# define USE_CAIRO  0
+-#undef USE_QT
+-#define USE_QT     0
+-# undef USE_OPENVG
+-# define USE_OPENVG 0
+-//# undef USE_NVPR
+-//# define USE_NVPR   0
+-//# undef USE_SKIA
+-//# define USE_SKIA   0
+-#endif
+-
+-#if defined(_WIN64)
+-# undef USE_QT
+-# define USE_QT 0
+-# undef USE_FREETYPE2
+-# define USE_FREETYPE2 0
+-#endif
+-
+-#if defined(sun)
+-# undef USE_QT
+-# define USE_QT 0
+-# undef USE_OPENVG
+-# define USE_OPENVG 0
+-#endif
+-
+-#endif // __nvpr_svg_config_h__
++
++/* nvpr_svg_config.h - configure renderers for path rendering test bed */
++
++// Copyright (c) NVIDIA Corporation. All rights reserved.
++
++#ifndef __nvpr_svg_config_h__
++#define __nvpr_svg_config_h__
++
++#if defined(_MSC_VER) && (_MSC_VER >= 1020)
++# pragma once
++#endif
++
++// FreeType2
++// http://www.freetype.org/
++#define USE_FREETYPE2 1
++
++// Khronos OpenVG 1.1 royalty-free, cross-platform API is a low-level hardware acceleration interface for vector graphics
++// http://www.khronos.org/openvg/
++// http://www.khronos.org/registry/vg/specs/openvg-1.1.pdf
++#define USE_OPENVG 1
++
++#ifdef _WIN32
++// Microsoft's Direct2D API introduced with Windows Vista (not supported on XP)
++// http://msdn.microsoft.com/en-us/library/dd370990%28VS.85%29.aspx
++// http://msdn.microsoft.com/en-us/library/dd372337%28v=VS.85%29.aspx
++// http://msdn.microsoft.com/en-us/library/dd372349%28v=VS.85%29.aspx
++# define USE_D2D   1
++#else
++# define USE_D2D   0
++#endif
++
++// Cairo Graphics, an open source 2D graphics library for multiple output devices
++// http://cairographics.org/
++// http://cairographics.org/manual/
++#define USE_CAIRO  0
++
++// Nokia's Qt platform includes the Arthur Paint System
++// http://doc.qt.nokia.com/4.6/qt4-arthur.html
++// http://doc.qt.nokia.com/4.6/qpainter.html
++#define USE_QT     1
++
++// NVIDIA's NV_path_rendering GPU-accelerated path rendering system
++// https://p4viewer.nvidia.com/getfile///sw/docs/gpu/drivers/OpenGL/specs/proposed/GL_NV_path_rendering.txt
++#define USE_NVPR   1
++
++// Google's Skia 2D Graphics Library used by Google's Chrome web browser and Android operating system
++// http://code.google.com/p/skia/
++#define USE_SKIA   0
++
++#if defined(__APPLE__)
++// It would probably be easy enough to support Skia and OpenVG (since their source is in the tree)
++// Supporting Cairo would be easy too if Cairo's source is in the tree
++// Qt might be more work (maybe not)
++# undef USE_D2D
++# define USE_D2D    0
++# undef USE_CAIRO
++# define USE_CAIRO  0
++# undef USE_QT
++# define USE_QT     0
++# undef USE_OPENVG
++# define USE_OPENVG 0
++# undef USE_NVPR
++# define USE_NVPR   0
++# undef USE_SKIA
++# define USE_SKIA   0
++#endif
++
++#if defined(linux)
++// It would probably be easy enough to support Skia and OpenVG (since their source is in the tree)
++// Supporting Cairo would be easy too if Cairo's source is in the tree
++// Qt might be more work (maybe not)
++# undef USE_D2D
++# define USE_D2D    0
++# undef USE_CAIRO
++# define USE_CAIRO  0
++#undef USE_QT
++#define USE_QT     1
++# undef USE_OPENVG
++# define USE_OPENVG 0
++//# undef USE_NVPR
++//# define USE_NVPR   0
++# undef USE_SKIA
++# define USE_SKIA   0
++#endif
++
++#if defined(_WIN64)
++# undef USE_QT
++# define USE_QT 0
++# undef USE_FREETYPE2
++# define USE_FREETYPE2 0
++#endif
++
++#if defined(sun)
++# undef USE_QT
++# define USE_QT 0
++# undef USE_OPENVG
++# define USE_OPENVG 0
++#endif
++
++#endif // __nvpr_svg_config_h__
+diff --git a/nvpr_examples/nvpr_svg/qt/renderer_qt.cpp b/nvpr_examples/nvpr_svg/qt/renderer_qt.cpp
+index 910b1ae..01683d7 100644
+--- a/nvpr_examples/nvpr_svg/qt/renderer_qt.cpp
++++ b/nvpr_examples/nvpr_svg/qt/renderer_qt.cpp
+@@ -1,732 +1,734 @@
+-
+-/* renderer_qt.cpp - Qt path rendering. */
+-
+-// Copyright (c) NVIDIA Corporation. All rights reserved.
+-
+-/* Requires the OpenGL Utility Toolkit (GLUT) and Cg runtime (version
+-   2.0 or higher). */
+-
+-#define _USE_MATH_DEFINES  // so <math.h> has M_PI
+-
+-#include "nvpr_svg_config.h"  // configure path renderers to use
+-
+-#if USE_QT
+-
+-# if defined(_MSC_VER)
+-#  pragma comment (lib, "QtCore4.lib")
+-# endif
+-
+-#include "renderer_qt.hpp"
+-#include "scene.hpp"
+-#include "path.hpp"
+-
+-#include "scene_qt.hpp"
+-
+-#include <Cg/degrees.hpp>
+-
+-#if _MSC_VER
+-# pragma comment (lib, "QtGui4.lib")         // link with Qt lib
+-#endif
+-
+-#include <QtCore/qmath.h>
+-#define Q_PI M_PI
+-
+-// Release builds shouldn't have verbose conditions.
+-#ifdef NDEBUG
+-#define verbose (0)
+-#else
+-extern int verbose;
+-#endif
+-
+-// BEGIN code from qt/src/svg/qsvghandler.cpp
+-static void pathArcSegment(QPainterPath &path,
+-                           qreal xc, qreal yc,
+-                           qreal th0, qreal th1,
+-                           qreal rx, qreal ry, qreal xAxisRotation)
+-{
+-    qreal sinTh, cosTh;
+-    qreal a00, a01, a10, a11;
+-    qreal x1, y1, x2, y2, x3, y3;
+-    qreal t;
+-    qreal thHalf;
+-
+-    sinTh = qSin(xAxisRotation * (Q_PI / 180.0));
+-    cosTh = qCos(xAxisRotation * (Q_PI / 180.0));
+-
+-    a00 =  cosTh * rx;
+-    a01 = -sinTh * ry;
+-    a10 =  sinTh * rx;
+-    a11 =  cosTh * ry;
+-
+-    thHalf = 0.5 * (th1 - th0);
+-    t = (8.0 / 3.0) * qSin(thHalf * 0.5) * qSin(thHalf * 0.5) / qSin(thHalf);
+-    x1 = xc + qCos(th0) - t * qSin(th0);
+-    y1 = yc + qSin(th0) + t * qCos(th0);
+-    x3 = xc + qCos(th1);
+-    y3 = yc + qSin(th1);
+-    x2 = x3 + t * qSin(th1);
+-    y2 = y3 - t * qCos(th1);
+-
+-    path.cubicTo(a00 * x1 + a01 * y1, a10 * x1 + a11 * y1,
+-                 a00 * x2 + a01 * y2, a10 * x2 + a11 * y2,
+-                 a00 * x3 + a01 * y3, a10 * x3 + a11 * y3);
+-}
+-
+-// the arc handling code underneath is from XSVG (BSD license)
+-/*
+- * Copyright  2002 USC/Information Sciences Institute
+- *
+- * Permission to use, copy, modify, distribute, and sell this software
+- * and its documentation for any purpose is hereby granted without
+- * fee, provided that the above copyright notice appear in all copies
+- * and that both that copyright notice and this permission notice
+- * appear in supporting documentation, and that the name of
+- * Information Sciences Institute not be used in advertising or
+- * publicity pertaining to distribution of the software without
+- * specific, written prior permission.  Information Sciences Institute
+- * makes no representations about the suitability of this software for
+- * any purpose.  It is provided "as is" without express or implied
+- * warranty.
+- *
+- * INFORMATION SCIENCES INSTITUTE DISCLAIMS ALL WARRANTIES WITH REGARD
+- * TO THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF
+- * MERCHANTABILITY AND FITNESS, IN NO EVENT SHALL INFORMATION SCIENCES
+- * INSTITUTE BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL
+- * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA
+- * OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+- * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+- * PERFORMANCE OF THIS SOFTWARE.
+- *
+- */
+-static void pathArc(QPainterPath &path,
+-                    qreal               rx,
+-                    qreal               ry,
+-                    qreal               x_axis_rotation,
+-                    int         large_arc_flag,
+-                    int         sweep_flag,
+-                    qreal               x,
+-                    qreal               y,
+-                    qreal curx, qreal cury)
+-{
+-    qreal sin_th, cos_th;
+-    qreal a00, a01, a10, a11;
+-    qreal x0, y0, x1, y1, xc, yc;
+-    qreal d, sfactor, sfactor_sq;
+-    qreal th0, th1, th_arc;
+-    int i, n_segs;
+-    qreal dx, dy, dx1, dy1, Pr1, Pr2, Px, Py, check;
+-
+-    rx = qAbs(rx);
+-    ry = qAbs(ry);
+-
+-    sin_th = qSin(x_axis_rotation * (Q_PI / 180.0));
+-    cos_th = qCos(x_axis_rotation * (Q_PI / 180.0));
+-
+-    dx = (curx - x) / 2.0;
+-    dy = (cury - y) / 2.0;
+-    dx1 =  cos_th * dx + sin_th * dy;
+-    dy1 = -sin_th * dx + cos_th * dy;
+-    Pr1 = rx * rx;
+-    Pr2 = ry * ry;
+-    Px = dx1 * dx1;
+-    Py = dy1 * dy1;
+-    /* Spec : check if radii are large enough */
+-    check = Px / Pr1 + Py / Pr2;
+-    if (check > 1) {
+-        rx = rx * qSqrt(check);
+-        ry = ry * qSqrt(check);
+-    }
+-
+-    a00 =  cos_th / rx;
+-    a01 =  sin_th / rx;
+-    a10 = -sin_th / ry;
+-    a11 =  cos_th / ry;
+-    x0 = a00 * curx + a01 * cury;
+-    y0 = a10 * curx + a11 * cury;
+-    x1 = a00 * x + a01 * y;
+-    y1 = a10 * x + a11 * y;
+-    /* (x0, y0) is current point in transformed coordinate space.
+-       (x1, y1) is new point in transformed coordinate space.
+-
+-       The arc fits a unit-radius circle in this space.
+-    */
+-    d = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
+-    sfactor_sq = 1.0 / d - 0.25;
+-    if (sfactor_sq < 0) sfactor_sq = 0;
+-    sfactor = qSqrt(sfactor_sq);
+-    if (sweep_flag == large_arc_flag) sfactor = -sfactor;
+-    xc = 0.5 * (x0 + x1) - sfactor * (y1 - y0);
+-    yc = 0.5 * (y0 + y1) + sfactor * (x1 - x0);
+-    /* (xc, yc) is center of the circle. */
+-
+-    th0 = atan2(y0 - yc, x0 - xc);
+-    th1 = atan2(y1 - yc, x1 - xc);
+-
+-    th_arc = th1 - th0;
+-    if (th_arc < 0 && sweep_flag)
+-        th_arc += 2 * Q_PI;
+-    else if (th_arc > 0 && !sweep_flag)
+-        th_arc -= 2 * Q_PI;
+-
+-    n_segs = qCeil(qAbs(th_arc / (Q_PI * 0.5 + 0.001)));
+-
+-    for (i = 0; i < n_segs; i++) {
+-        pathArcSegment(path, xc, yc,
+-                       th0 + i * th_arc / n_segs,
+-                       th0 + (i + 1) * th_arc / n_segs,
+-                       rx, ry, x_axis_rotation);
+-    }
+-}
+-// END code from qt/src/svg/qsvghandler.cpp
+-
+-struct QtPathCacheProcessor : PathSegmentProcessor {
+-    QPainterPtr painter;
+-    QPainterPath &path;
+-
+-    QtPathCacheProcessor(QPainterPtr p, QPainterPath &path_)
+-        : painter(p)
+-        , path(path_)
+-    { }
+-
+-    void beginPath(PathPtr p) {
+-        path = QPainterPath();  // reset the path
+-        switch (p->style.fill_rule) {
+-        case PathStyle::EVEN_ODD:
+-            assert(path.fillRule() == Qt::OddEvenFill);
+-            break;
+-        case PathStyle::NON_ZERO:
+-            path.setFillRule(Qt::WindingFill);
+-            break;
+-        default:
+-            assert(!"bogus style.fill_rule");
+-            break;
+-        }
+-    }
+-    void moveTo(const float2 plist[2], size_t coord_index, char cmd) {
+-        path.moveTo(plist[1].x, plist[1].y);
+-    }
+-    void lineTo(const float2 plist[2], size_t coord_index, char cmd) {
+-        path.lineTo(plist[1].x, plist[1].y);
+-    }
+-    void quadraticCurveTo(const float2 plist[3], size_t coord_index, char cmd) {
+-        path.quadTo(plist[1].x, plist[1].y,
+-                    plist[2].x, plist[2].y);
+-    }
+-    void cubicCurveTo(const float2 plist[4], size_t coord_index, char cmd) {
+-        path.cubicTo(plist[1].x, plist[1].y,
+-                     plist[2].x, plist[2].y,
+-                     plist[3].x, plist[3].y);
+-    }
+-    void arcTo(const EndPointArc &arc, size_t coord_index, char cmd) {
+-        // Convert to a center point arc to be able to render the arc center.
+-        CenterPointArc center_point_arc(arc);
+-        switch (center_point_arc.form) {
+-        case CenterPointArc::BEHAVED:
+-            {
+-                // Qt doesn't have an SVG-style partial elliptical arcTo
+-                // primitive so we approximate the SVG arcTo as a
+-                // sequence of cubic curves.
+-                //
+-                // Qt's path.arcTo doesn't have an x_axis_rotation
+-                // and generates a lineTo from the current position
+-                // to the arc start.  See:
+-                // http://doc.qt.nokia.com/4.6/qpainterpath.html#arcTo
+-                pathArc(path,
+-                        arc.radii.x, arc.radii.y,
+-                        arc.x_axis_rotation,
+-                        arc.large_arc_flag, arc.sweep_flag,
+-                        arc.p[1].x, arc.p[1].y,
+-                        arc.p[0].x, arc.p[0].y);
+-            }
+-            break;
+-        case CenterPointArc::DEGENERATE_LINE:
+-            path.lineTo(arc.p[1].x, arc.p[1].y);
+-            break;
+-        case CenterPointArc::DEGENERATE_POINT:
+-            // Do nothing.
+-            break;
+-        default:
+-            assert(!"bogus CenterPointArc form");
+-            break;
+-        }
+-    }
+-    void close(char cmd) {
+-        path.closeSubpath();
+-    }
+-    void endPath(PathPtr p) {
+-    }
+-};
+-
+-void QtRenderer::configureSurface(int width, int height)
+-{
+-    image = QImagePtr(new QImage(width, height, QImage::Format_ARGB32));
+-    painter = QPainterPtr(new QPainter(image.get()));
+-    painter->setRenderHint(QPainter::Antialiasing);  // http://doc.trolltech.com/4.5/qpainter.html#RenderHint-enum
+-}
+-
+-void QtRenderer::shutdown()
+-{
+-    // first null-out painter so it disconnects from image, then null-out image
+-    painter = QPainterPtr();
+-    image = QImagePtr();
+-}
+-
+-void QtRenderer::clear(float3 clear_color)
+-{
+-    QColor ccolor;
+-    ccolor.setRgbF(clear_color.r, clear_color.g, clear_color.b);
+-    QBrush clear_brush(ccolor);
+-    painter->setOpacity(1.0);
+-    painter->resetTransform();
+-    painter->fillRect(0, 0, image->width(), image->height(), clear_brush);
+-}
+-
+-void QtRenderer::setView(float4x4 view)
+-{
+-    extern float scene_ratio;
+-    const float2 scale = clipToSurfaceScales(image->width(), image->height(), scene_ratio);
+-
+-    // Establish transform
+-    QTransform transform;
+-    // Step 1: make mapping from [-1,+1] clip space to pixel space
+-    transform.scale(image->width()/2.0, image->height()/2.0);
+-    transform.translate(1, 1);
+-    transform.scale(scale.x, scale.y);
+-
+-    // Step 2: make a mapping from surface space to clip space
+-    QTransform v(view[0][0], view[1][0], view[3][0],
+-                 view[0][1], view[1][1], view[3][1],
+-                 view[0][3], view[1][3], view[3][3]);
+-    // XXX Qt doesn't actually appear to handle projective transform correctly.
+-    transform = v * transform;
+-    painter->setTransform(transform);
+-}
+-
+-VisitorPtr QtRenderer::makeVisitor()
+-{
+-    return VisitorPtr(new QtVisitors::Draw(
+-        dynamic_pointer_cast<QtRenderer>(shared_from_this())));
+-}
+-
+-void QtRenderer::copyImageToWindow()
+-{
+-    glWindowPos2f(0,0);
+-
+-    const int w = image->width(),
+-              h = image->height();
+-
+-    const unsigned char *pixels = image->bits();
+-
+-    assert(image->bytesPerLine()  == w*4);
+-    glDrawPixels(w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, pixels);
+-}
+-
+-const char *QtRenderer::getWindowTitle()
+-{
+-	return "Qt path rendering";
+-}
+-
+-const char *QtRenderer::getName()
+-{
+-    return "Qt";
+-}
+-
+-shared_ptr<RendererState<Path> > QtRenderer::alloc(Path *owner)
+-{
+-    return QtPathRendererStatePtr(new QtPathRendererState(shared_from_this(), owner));
+-}
+-
+-shared_ptr<RendererState<Shape> > QtRenderer::alloc(Shape *owner)
+-{
+-    return QtShapeRendererStatePtr(new QtShapeRendererState(shared_from_this(), owner));
+-}
+-
+-void QtPathRendererState::validate()
+-{
+-    if (valid) {
+-        return;
+-    }
+-
+-    QtRendererPtr renderer = getRenderer();
+-    QtPathCacheProcessor processor(renderer->painter, path);
+-    owner->processSegments(processor);
+-    valid = true;
+-}
+-
+-void QtPathRendererState::invalidate()
+-{
+-    // XXX eventually the path's QPainterPath could be validated here
+-    valid = false;
+-}
+-
+-static Qt::PenCapStyle lineCapConverter(const PathStyle *style)
+-{
+-    switch (style->line_cap) {
+-    default:
+-        assert(!"bad line_cap");
+-    case PathStyle::BUTT_CAP:
+-        return Qt::FlatCap;
+-    case PathStyle::ROUND_CAP:
+-        return Qt::RoundCap;
+-    case PathStyle::SQUARE_CAP:
+-        return Qt::SquareCap;
+-    case PathStyle::TRIANGLE_CAP:
+-        printf("Qt lacks triangle cap\n");
+-        return Qt::FlatCap;
+-    }
+-}
+-
+-static Qt::PenJoinStyle lineJoinConverter(const PathStyle *style)
+-{
+-    switch (style->line_join) {
+-    default:
+-        assert(!"bad line_join");
+-    case PathStyle::MITER_TRUNCATE_JOIN:
+-        return Qt::MiterJoin;  // exceeding miter limit "truncates" miter edges to stroke_width*miter_limit
+-    case PathStyle::MITER_REVERT_JOIN:
+-        return Qt::SvgMiterJoin;  // exceeding miter limit "snaps" to bevel
+-    case PathStyle::ROUND_JOIN:
+-        return Qt::RoundJoin;
+-    case PathStyle::BEVEL_JOIN:
+-        return Qt::BevelJoin;
+-    case PathStyle::NONE_JOIN:
+-        printf("Qt doesn't support 'none' join, treating as bevel\n");
+-        return Qt::BevelJoin;
+-    }
+-}
+-
+-void QtShapeRendererState::getBrushes(QBrush &fill_brush, QBrush &stroke_brush)
+-{
+-    fill_brush = QBrush(Qt::NoBrush);
+-    stroke_brush = QBrush(Qt::NoBrush);
+-
+-    assert(owner);
+-
+-    const PaintPtr fill_paint = owner->getFillPaint();
+-    if (fill_paint) {
+-        PaintRendererStatePtr renderer_state = fill_paint->getRendererState(getRenderer());
+-        QtPaintRendererStatePtr paint_renderer_state = dynamic_pointer_cast<QtPaintRendererState>(renderer_state);
+-        assert(paint_renderer_state);
+-        if (paint_renderer_state) {
+-            fill_brush = paint_renderer_state->getBrush(owner->net_fill_opacity);
+-
+-            if (fill_brush.style() == Qt::TexturePattern) {
+-                float4 bounds = owner->getBounds();  // returns two (x,y) pairs
+-
+-                float w = fill_brush.textureImage().width(),
+-                      h = fill_brush.textureImage().height();
+-
+-                float2 p1 = bounds.xy,
+-                       p2 = bounds.zw,
+-                       diff = p2-p1;
+-
+-                // Inverse orthographic matrix
+-                QMatrix inv_ortho(diff.x/w,0,
+-                                  0,diff.y/h,
+-                                  0,0);
+-
+-                fill_brush.setMatrix(inv_ortho);
+-            }
+-        }
+-    }
+-
+-    const PaintPtr stroke_paint = owner->getStrokePaint();
+-    if (stroke_paint) {
+-        PaintRendererStatePtr renderer_state = stroke_paint->getRendererState(getRenderer());
+-        QtPaintRendererStatePtr paint_renderer_state = dynamic_pointer_cast<QtPaintRendererState>(renderer_state);
+-        assert(paint_renderer_state);
+-        if (paint_renderer_state) {
+-            stroke_brush = paint_renderer_state->getBrush(owner->net_stroke_opacity);
+-        }
+-    }
+-}
+-
+-void QtShapeRendererState::validate()
+-{
+-    if (valid) {
+-        return;
+-    }
+-
+-    // validate brushes
+-    QBrush fill_brush, stroke_brush;
+-    getBrushes(fill_brush, stroke_brush);
+-
+-    brush = fill_brush;
+-
+-    pen.setBrush(stroke_brush);
+-    const PathStyle *style = &owner->getPath()->style;
+-    pen.setWidthF(style->stroke_width);
+-    pen.setCapStyle(lineCapConverter(style));
+-    pen.setJoinStyle(lineJoinConverter(style));
+-    pen.setMiterLimit(style->miter_limit);
+-    if (style->dash_array.size() > 0) {
+-        QVector<qreal> pattern;
+-        int n = int(style->dash_array.size());
+-        pattern.reserve(n);
+-        // Qt's dash pattern is specified in units of the pens width,
+-        // e.g. a dash of length 5 in width 10 is 50 pixels long.
+-        for (int i = 0; i<n; i++) {
+-            pattern.push_back(style->dash_array[i] / style->stroke_width);
+-        }
+-        // "If an odd number of values is provided,
+-        if (n & 1) {
+-            // then the list of values is repeated to yield an even number
+-            // of values. Thus, stroke-dasharray: 5,3,2 is equivalent to
+-            // stroke-dasharray: 5,3,2,5,3,2."
+-            for (int i = 0; i<n; i++) {
+-                pattern.push_back(style->dash_array[i] / style->stroke_width);
+-            }
+-        }
+-        pen.setDashPattern(pattern);
+-        // "The offset is measured in terms of the units used to
+-        // specify the dash pattern." (so divide by stroke width).
+-        pen.setDashOffset(style->dash_offset / style->stroke_width);
+-    } else {
+-        pen.setDashPattern(QVector<qreal>());
+-    }
+-
+-    valid = true;
+-}
+-
+-void QtShapeRendererState::invalidate()
+-{
+-    valid = false;
+-}
+-
+-void QtShapeRendererState::draw()
+-{
+-    QtRendererPtr renderer = getRenderer();
+-
+-    // validate brushes
+-    validate();
+-
+-    // validate the path
+-    QtPathRendererStatePtr path_state = getPathRendererState();
+-    path_state->validate();
+-
+-    extern bool doFilling, doStroking;
+-    const PathStyle &style = owner->getPath()->style;
+-    if (style.do_fill && doFilling) {
+-        renderer->painter->fillPath(path_state->path, brush);
+-    }
+-    if (style.do_stroke && doStroking) {
+-        // From http://qt.nokia.com/doc/4.6/qpen.html#setWidth
+-        // "A line width of zero indicates a cosmetic pen. This
+-        // means that the pen width is always drawn one pixel wide,
+-        // independent of the transformation set on the painter."
+-        //
+-        // Skip zero width stroking to avoid Qt's cosmetic pen.
+-        if (style.stroke_width > 0) {
+-            renderer->painter->strokePath(path_state->path, pen);
+-        }
+-    }
+-}
+-
+-void QtShapeRendererState::getPaths(vector<QPainterPath*>& paths)
+-{
+-    QtRendererPtr renderer = getRenderer();
+-
+-    // validate the path
+-    QtPathRendererStatePtr path_state = getPathRendererState();
+-    path_state->validate();
+-
+-    paths.push_back(&path_state->path);
+-}
+-
+-shared_ptr<RendererState<Paint> > QtRenderer::alloc(Paint *owner)
+-{
+-    SolidColorPaint *solid_color_paint = dynamic_cast<SolidColorPaint*>(owner);
+-    if (solid_color_paint) {
+-        return QtSolidColorPaintRendererStatePtr(new QtSolidColorPaintRendererState(shared_from_this(), solid_color_paint));
+-    }
+-
+-    LinearGradientPaint *linear_gradient_paint = dynamic_cast<LinearGradientPaint*>(owner);
+-    if (linear_gradient_paint) {
+-        return QtLinearGradientPaintRendererStatePtr(new QtLinearGradientPaintRendererState(shared_from_this(), linear_gradient_paint));
+-    }
+-
+-    RadialGradientPaint *radial_gradient_paint = dynamic_cast<RadialGradientPaint*>(owner);
+-    if (radial_gradient_paint) {
+-        return QtRadialGradientPaintRendererStatePtr(new QtRadialGradientPaintRendererState(shared_from_this(), radial_gradient_paint));
+-    }
+-
+-    ImagePaint *image_paint = dynamic_cast<ImagePaint*>(owner);
+-    if (image_paint) {
+-        return QtImagePaintRendererStatePtr(new QtImagePaintRendererState(shared_from_this(), image_paint));
+-    }
+-
+-    assert(!"paint unsupported by Qt renderer");
+-    return QtPaintRendererStatePtr();
+-}
+-
+-void QtPaintRendererState::invalidate()
+-{
+-    valid = false;
+-}
+-
+-QtSolidColorPaintRendererState::QtSolidColorPaintRendererState(RendererPtr renderer, SolidColorPaint *paint)
+-    : QtPaintRendererState(renderer, paint)
+-{}
+-
+-void QtSolidColorPaintRendererState::validate(float opacity)
+-{
+-    if (valid && opacity == this->opacity) {
+-        return;
+-    }
+-    SolidColorPaint *paint = dynamic_cast<SolidColorPaint*>(owner);
+-    assert(paint);
+-    if (paint) {
+-        QColor color;
+-
+-        const float4 solid_color = paint->getColor();
+-        color.setRgbF(solid_color.r, solid_color.g, solid_color.b);
+-        color.setAlphaF(solid_color.a * opacity);
+-        brush.setColor(color);
+-        brush.setStyle(Qt::SolidPattern);
+-    }
+-    valid = true;
+-}
+-
+-static QGradient::Spread convert_SVG_spread_method_to_QGradientSpread(SpreadMethod v)
+-{
+-    switch (v) {
+-    case PAD:
+-        return QGradient::PadSpread;
+-    case REFLECT:
+-        return QGradient::ReflectSpread;
+-    case REPEAT:
+-        return QGradient::RepeatSpread;
+-    default:
+-        assert(!"bogus spread method");
+-    case NONE:
+-        assert(!"none spread not supported by Qt");
+-        return QGradient::PadSpread;
+-    }
+-}
+-
+-QtGradientPaintRendererState::QtGradientPaintRendererState(RendererPtr renderer, GradientPaint *paint)
+-    : QtPaintRendererState(renderer, paint)
+-{}
+-
+-void QtGradientPaintRendererState::setGradientStops(QGradient &gradient, const GradientPaint *paint, float opacity)
+-{
+-    QVector<QGradientStop> stops;
+-
+-    const vector<GradientStop> &stop_array = paint->getStopArray();
+-    for (vector<GradientStop>::const_iterator stop = stop_array.begin();
+-        stop != stop_array.end();
+-        ++stop) {
+-        QColor color;
+-        color.setRgbF(stop->color.r, stop->color.g, stop->color.b);
+-        color.setAlphaF(stop->color.a * opacity);
+-        stops.push_back(QGradientStop(stop->offset, color));
+-    }
+-    gradient.setStops(stops);
+-}
+-
+-void QtGradientPaintRendererState::setGenericGradientParameters(QGradient &gradient, const GradientPaint *paint, float opacity)
+-{
+-    setGradientStops(gradient, paint, opacity);
+-
+-    if (paint->getGradientUnits() == USER_SPACE_ON_USE) {
+-        gradient.setCoordinateMode(QGradient::LogicalMode);
+-    } else {
+-        assert(paint->getGradientUnits() == OBJECT_BOUNDING_BOX);
+-        gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+-    }
+-
+-    gradient.setSpread(convert_SVG_spread_method_to_QGradientSpread(paint->getSpreadMethod()));
+-}
+-
+-QtLinearGradientPaintRendererState::QtLinearGradientPaintRendererState(RendererPtr renderer, LinearGradientPaint *paint)
+-    : QtGradientPaintRendererState(renderer, paint)
+-{}
+-
+-void QtLinearGradientPaintRendererState::validate(float opacity)
+-{
+-    if (valid && opacity == this->opacity) {
+-        return;
+-    }
+-    const LinearGradientPaint *paint = dynamic_cast<LinearGradientPaint*>(owner);
+-    assert(paint);
+-    if (paint) {
+-        QLinearGradient linear_gradient(paint->getV1().x, paint->getV1().y,
+-                                        paint->getV2().x, paint->getV2().y);
+-
+-        setGenericGradientParameters(linear_gradient, paint, opacity);
+-
+-        brush = QBrush(linear_gradient);
+-        const float3x3 &gradient_transform = paint->getGradientTransform();
+-        brush.setMatrix(QMatrix(gradient_transform[0][0],gradient_transform[1][0],
+-                        gradient_transform[0][1],gradient_transform[1][1],
+-                        gradient_transform[0][2],gradient_transform[1][2]));
+-        brush.setStyle(Qt::LinearGradientPattern);
+-    }
+-    valid = true;
+-}
+-
+-QtRadialGradientPaintRendererState::QtRadialGradientPaintRendererState(RendererPtr renderer, RadialGradientPaint *paint)
+-    : QtGradientPaintRendererState(renderer, paint)
+-{}
+-
+-void QtRadialGradientPaintRendererState::validate(float opacity)
+-{
+-    if (valid && opacity == this->opacity) {
+-        return;
+-    }
+-    const RadialGradientPaint *paint = dynamic_cast<RadialGradientPaint*>(owner);
+-    assert(paint);
+-    if (paint) {
+-        QRadialGradient radial_gradient(paint->getCenter().x, paint->getCenter().y,
+-                                        paint->getRadius(),
+-                                        paint->getFocalPoint().x, paint->getFocalPoint().y);
+-
+-        setGenericGradientParameters(radial_gradient, paint, opacity);
+-
+-        brush = QBrush(radial_gradient);
+-        const float3x3 &gradient_transform = paint->getGradientTransform();
+-        brush.setMatrix(QMatrix(gradient_transform[0][0],gradient_transform[1][0],
+-                                gradient_transform[0][1],gradient_transform[1][1],
+-                                gradient_transform[0][2],gradient_transform[1][2]));
+-        brush.setStyle(Qt::RadialGradientPattern);
+-    }
+-    valid = true;
+-}
+-
+-// QtImagePaintRendererState
+-
+-QtImagePaintRendererState::QtImagePaintRendererState(RendererPtr renderer, ImagePaint *paint)
+-    : QtPaintRendererState(renderer, paint)
+-{
+-    const int width = paint->image->width,
+-              height = paint->image->height;
+-
+-    image = QImage(width, height, QImage::Format_ARGB32_Premultiplied);
+-
+-    unsigned int *argb = reinterpret_cast<unsigned int *>(image.bits());
+-    const RasterImage::Pixel *pixels = paint->image->pixels;
+-    for (int i=0; i<height; i++) {
+-        for (int j=0; j<width; j++) {
+-            *argb = (pixels->a << 24) | (pixels->r << 16) | (pixels->g << 8) | (pixels->b << 0);
+-            argb++;
+-            pixels++;
+-        }
+-    }
+-}
+-
+-void QtImagePaintRendererState::validate(float opacity)
+-{
+-    if (valid && opacity == this->opacity) {
+-        return;
+-    }
+-    const ImagePaint *paint = dynamic_cast<ImagePaint*>(owner);
+-    assert(paint);
+-    if (paint) {
+-        setOpacity(opacity);
+-        // XXX should multiply image by opacity here??
+-        brush.setTextureImage(image);
+-    }
+-    valid = true;
+-}
+-
+-#endif // USE_QT
++
++/* renderer_qt.cpp - Qt path rendering. */
++
++// Copyright (c) NVIDIA Corporation. All rights reserved.
++
++/* Requires the OpenGL Utility Toolkit (GLUT) and Cg runtime (version
++   2.0 or higher). */
++
++#define _USE_MATH_DEFINES  // so <math.h> has M_PI
++
++#include "nvpr_svg_config.h"  // configure path renderers to use
++
++#if USE_QT
++
++# if defined(_MSC_VER)
++#  pragma comment (lib, "QtCore4.lib")
++# endif
++
++#include "renderer_qt.hpp"
++#include "scene.hpp"
++#include "path.hpp"
++
++#include "scene_qt.hpp"
++
++#include <Cg/degrees.hpp>
++#include <QDebug>
++#include <QApplication>
++
++#if _MSC_VER
++# pragma comment (lib, "QtGui4.lib")         // link with Qt lib
++#endif
++
++#include <QtCore/qmath.h>
++#define Q_PI M_PI
++
++// Release builds shouldn't have verbose conditions.
++#ifdef NDEBUG
++#define verbose (0)
++#else
++extern int verbose;
++#endif
++
++// BEGIN code from qt/src/svg/qsvghandler.cpp
++static void pathArcSegment(QPainterPath &path,
++                           qreal xc, qreal yc,
++                           qreal th0, qreal th1,
++                           qreal rx, qreal ry, qreal xAxisRotation)
++{
++    qreal sinTh, cosTh;
++    qreal a00, a01, a10, a11;
++    qreal x1, y1, x2, y2, x3, y3;
++    qreal t;
++    qreal thHalf;
++
++    sinTh = qSin(xAxisRotation * (Q_PI / 180.0));
++    cosTh = qCos(xAxisRotation * (Q_PI / 180.0));
++
++    a00 =  cosTh * rx;
++    a01 = -sinTh * ry;
++    a10 =  sinTh * rx;
++    a11 =  cosTh * ry;
++
++    thHalf = 0.5 * (th1 - th0);
++    t = (8.0 / 3.0) * qSin(thHalf * 0.5) * qSin(thHalf * 0.5) / qSin(thHalf);
++    x1 = xc + qCos(th0) - t * qSin(th0);
++    y1 = yc + qSin(th0) + t * qCos(th0);
++    x3 = xc + qCos(th1);
++    y3 = yc + qSin(th1);
++    x2 = x3 + t * qSin(th1);
++    y2 = y3 - t * qCos(th1);
++
++    path.cubicTo(a00 * x1 + a01 * y1, a10 * x1 + a11 * y1,
++                 a00 * x2 + a01 * y2, a10 * x2 + a11 * y2,
++                 a00 * x3 + a01 * y3, a10 * x3 + a11 * y3);
++}
++
++// the arc handling code underneath is from XSVG (BSD license)
++/*
++ * Copyright  2002 USC/Information Sciences Institute
++ *
++ * Permission to use, copy, modify, distribute, and sell this software
++ * and its documentation for any purpose is hereby granted without
++ * fee, provided that the above copyright notice appear in all copies
++ * and that both that copyright notice and this permission notice
++ * appear in supporting documentation, and that the name of
++ * Information Sciences Institute not be used in advertising or
++ * publicity pertaining to distribution of the software without
++ * specific, written prior permission.  Information Sciences Institute
++ * makes no representations about the suitability of this software for
++ * any purpose.  It is provided "as is" without express or implied
++ * warranty.
++ *
++ * INFORMATION SCIENCES INSTITUTE DISCLAIMS ALL WARRANTIES WITH REGARD
++ * TO THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS, IN NO EVENT SHALL INFORMATION SCIENCES
++ * INSTITUTE BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL
++ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA
++ * OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
++ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
++ * PERFORMANCE OF THIS SOFTWARE.
++ *
++ */
++static void pathArc(QPainterPath &path,
++                    qreal               rx,
++                    qreal               ry,
++                    qreal               x_axis_rotation,
++                    int         large_arc_flag,
++                    int         sweep_flag,
++                    qreal               x,
++                    qreal               y,
++                    qreal curx, qreal cury)
++{
++    qreal sin_th, cos_th;
++    qreal a00, a01, a10, a11;
++    qreal x0, y0, x1, y1, xc, yc;
++    qreal d, sfactor, sfactor_sq;
++    qreal th0, th1, th_arc;
++    int i, n_segs;
++    qreal dx, dy, dx1, dy1, Pr1, Pr2, Px, Py, check;
++
++    rx = qAbs(rx);
++    ry = qAbs(ry);
++
++    sin_th = qSin(x_axis_rotation * (Q_PI / 180.0));
++    cos_th = qCos(x_axis_rotation * (Q_PI / 180.0));
++
++    dx = (curx - x) / 2.0;
++    dy = (cury - y) / 2.0;
++    dx1 =  cos_th * dx + sin_th * dy;
++    dy1 = -sin_th * dx + cos_th * dy;
++    Pr1 = rx * rx;
++    Pr2 = ry * ry;
++    Px = dx1 * dx1;
++    Py = dy1 * dy1;
++    /* Spec : check if radii are large enough */
++    check = Px / Pr1 + Py / Pr2;
++    if (check > 1) {
++        rx = rx * qSqrt(check);
++        ry = ry * qSqrt(check);
++    }
++
++    a00 =  cos_th / rx;
++    a01 =  sin_th / rx;
++    a10 = -sin_th / ry;
++    a11 =  cos_th / ry;
++    x0 = a00 * curx + a01 * cury;
++    y0 = a10 * curx + a11 * cury;
++    x1 = a00 * x + a01 * y;
++    y1 = a10 * x + a11 * y;
++    /* (x0, y0) is current point in transformed coordinate space.
++       (x1, y1) is new point in transformed coordinate space.
++
++       The arc fits a unit-radius circle in this space.
++    */
++    d = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
++    sfactor_sq = 1.0 / d - 0.25;
++    if (sfactor_sq < 0) sfactor_sq = 0;
++    sfactor = qSqrt(sfactor_sq);
++    if (sweep_flag == large_arc_flag) sfactor = -sfactor;
++    xc = 0.5 * (x0 + x1) - sfactor * (y1 - y0);
++    yc = 0.5 * (y0 + y1) + sfactor * (x1 - x0);
++    /* (xc, yc) is center of the circle. */
++
++    th0 = atan2(y0 - yc, x0 - xc);
++    th1 = atan2(y1 - yc, x1 - xc);
++
++    th_arc = th1 - th0;
++    if (th_arc < 0 && sweep_flag)
++        th_arc += 2 * Q_PI;
++    else if (th_arc > 0 && !sweep_flag)
++        th_arc -= 2 * Q_PI;
++
++    n_segs = qCeil(qAbs(th_arc / (Q_PI * 0.5 + 0.001)));
++
++    for (i = 0; i < n_segs; i++) {
++        pathArcSegment(path, xc, yc,
++                       th0 + i * th_arc / n_segs,
++                       th0 + (i + 1) * th_arc / n_segs,
++                       rx, ry, x_axis_rotation);
++    }
++}
++// END code from qt/src/svg/qsvghandler.cpp
++
++struct QtPathCacheProcessor : PathSegmentProcessor {
++    QPainterPtr painter;
++    QPainterPath &path;
++
++    QtPathCacheProcessor(QPainterPtr p, QPainterPath &path_)
++        : painter(p)
++        , path(path_)
++    { }
++
++    void beginPath(PathPtr p) {
++        path = QPainterPath();  // reset the path
++        switch (p->style.fill_rule) {
++        case PathStyle::EVEN_ODD:
++            assert(path.fillRule() == Qt::OddEvenFill);
++            break;
++        case PathStyle::NON_ZERO:
++            path.setFillRule(Qt::WindingFill);
++            break;
++        default:
++            assert(!"bogus style.fill_rule");
++            break;
++        }
++    }
++    void moveTo(const float2 plist[2], size_t coord_index, char cmd) {
++        path.moveTo(plist[1].x, plist[1].y);
++    }
++    void lineTo(const float2 plist[2], size_t coord_index, char cmd) {
++        path.lineTo(plist[1].x, plist[1].y);
++    }
++    void quadraticCurveTo(const float2 plist[3], size_t coord_index, char cmd) {
++        path.quadTo(plist[1].x, plist[1].y,
++                    plist[2].x, plist[2].y);
++    }
++    void cubicCurveTo(const float2 plist[4], size_t coord_index, char cmd) {
++        path.cubicTo(plist[1].x, plist[1].y,
++                     plist[2].x, plist[2].y,
++                     plist[3].x, plist[3].y);
++    }
++    void arcTo(const EndPointArc &arc, size_t coord_index, char cmd) {
++        // Convert to a center point arc to be able to render the arc center.
++        CenterPointArc center_point_arc(arc);
++        switch (center_point_arc.form) {
++        case CenterPointArc::BEHAVED:
++            {
++                // Qt doesn't have an SVG-style partial elliptical arcTo
++                // primitive so we approximate the SVG arcTo as a
++                // sequence of cubic curves.
++                //
++                // Qt's path.arcTo doesn't have an x_axis_rotation
++                // and generates a lineTo from the current position
++                // to the arc start.  See:
++                // http://doc.qt.nokia.com/4.6/qpainterpath.html#arcTo
++                pathArc(path,
++                        arc.radii.x, arc.radii.y,
++                        arc.x_axis_rotation,
++                        arc.large_arc_flag, arc.sweep_flag,
++                        arc.p[1].x, arc.p[1].y,
++                        arc.p[0].x, arc.p[0].y);
++            }
++            break;
++        case CenterPointArc::DEGENERATE_LINE:
++            path.lineTo(arc.p[1].x, arc.p[1].y);
++            break;
++        case CenterPointArc::DEGENERATE_POINT:
++            // Do nothing.
++            break;
++        default:
++            assert(!"bogus CenterPointArc form");
++            break;
++        }
++    }
++    void close(char cmd) {
++        path.closeSubpath();
++    }
++    void endPath(PathPtr p) {
++    }
++};
++
++static QApplication *app = 0;
++void QtRenderer::configureSurface(int width, int height)
++{
++    if (!app) {
++        int argc = 1;
++        char *argv[] = {"nvpr_svg", 0};
++        app = new QApplication(argc, argv);
++    }
++    image = QImagePtr(new QGLPixelBuffer(width, height, QGLFormat(QGL::SampleBuffers)));
++    painter = QPainterPtr(new QPainter(image.get()));
++    painter->setRenderHint(QPainter::Antialiasing);  // http://doc.trolltech.com/4.5/qpainter.html#RenderHint-enum
++    dynamicTexture = image->generateDynamicTexture();
++    hasDynamicTextureUpdate = image->bindToDynamicTexture(dynamicTexture);
++}
++
++void QtRenderer::shutdown()
++{
++    // first null-out painter so it disconnects from image, then null-out image
++    painter = QPainterPtr();
++    image = QImagePtr();
++}
++
++void QtRenderer::clear(float3 clear_color)
++{
++    QColor ccolor;
++    ccolor.setRgbF(clear_color.r, clear_color.g, clear_color.b);
++    QBrush clear_brush(ccolor);
++    painter->setOpacity(1.0);
++    painter->resetTransform();
++    painter->fillRect(0, 0, image->width(), image->height(), clear_brush);
++}
++
++void QtRenderer::setView(float4x4 view)
++{
++    extern float scene_ratio;
++    const float2 scale = clipToSurfaceScales(image->width(), image->height(), scene_ratio);
++
++    // Establish transform
++    QTransform transform;
++    // Step 1: make mapping from [-1,+1] clip space to pixel space
++    transform.scale(image->width()/2.0, image->height()/2.0);
++    transform.translate(1, 1);
++    transform.scale(scale.x, scale.y);
++
++    // Step 2: make a mapping from surface space to clip space
++    QTransform v(view[0][0], view[1][0], view[3][0],
++                 view[0][1], view[1][1], view[3][1],
++                 view[0][3], view[1][3], view[3][3]);
++    // XXX Qt doesn't actually appear to handle projective transform correctly.
++    transform = v * transform;
++    painter->setTransform(transform);
++}
++
++VisitorPtr QtRenderer::makeVisitor()
++{
++    return VisitorPtr(new QtVisitors::Draw(
++        dynamic_pointer_cast<QtRenderer>(shared_from_this())));
++}
++
++void QtRenderer::copyImageToWindow()
++{
++    image->drawTexture(QPointF(0, 0), dynamicTexture);
++}
++
++const char *QtRenderer::getWindowTitle()
++{
++	return "Qt path rendering";
++}
++
++const char *QtRenderer::getName()
++{
++    return "Qt";
++}
++
++shared_ptr<RendererState<Path> > QtRenderer::alloc(Path *owner)
++{
++    return QtPathRendererStatePtr(new QtPathRendererState(shared_from_this(), owner));
++}
++
++shared_ptr<RendererState<Shape> > QtRenderer::alloc(Shape *owner)
++{
++    return QtShapeRendererStatePtr(new QtShapeRendererState(shared_from_this(), owner));
++}
++
++void QtPathRendererState::validate()
++{
++    if (valid) {
++        return;
++    }
++
++    QtRendererPtr renderer = getRenderer();
++    QtPathCacheProcessor processor(renderer->painter, path);
++    owner->processSegments(processor);
++    valid = true;
++}
++
++void QtPathRendererState::invalidate()
++{
++    // XXX eventually the path's QPainterPath could be validated here
++    valid = false;
++}
++
++static Qt::PenCapStyle lineCapConverter(const PathStyle *style)
++{
++    switch (style->line_cap) {
++    default:
++        assert(!"bad line_cap");
++    case PathStyle::BUTT_CAP:
++        return Qt::FlatCap;
++    case PathStyle::ROUND_CAP:
++        return Qt::RoundCap;
++    case PathStyle::SQUARE_CAP:
++        return Qt::SquareCap;
++    case PathStyle::TRIANGLE_CAP:
++        printf("Qt lacks triangle cap\n");
++        return Qt::FlatCap;
++    }
++}
++
++static Qt::PenJoinStyle lineJoinConverter(const PathStyle *style)
++{
++    switch (style->line_join) {
++    default:
++        assert(!"bad line_join");
++    case PathStyle::MITER_TRUNCATE_JOIN:
++        return Qt::MiterJoin;  // exceeding miter limit "truncates" miter edges to stroke_width*miter_limit
++    case PathStyle::MITER_REVERT_JOIN:
++        return Qt::SvgMiterJoin;  // exceeding miter limit "snaps" to bevel
++    case PathStyle::ROUND_JOIN:
++        return Qt::RoundJoin;
++    case PathStyle::BEVEL_JOIN:
++        return Qt::BevelJoin;
++    case PathStyle::NONE_JOIN:
++        printf("Qt doesn't support 'none' join, treating as bevel\n");
++        return Qt::BevelJoin;
++    }
++}
++
++void QtShapeRendererState::getBrushes(QBrush &fill_brush, QBrush &stroke_brush)
++{
++    fill_brush = QBrush(Qt::NoBrush);
++    stroke_brush = QBrush(Qt::NoBrush);
++
++    assert(owner);
++
++    const PaintPtr fill_paint = owner->getFillPaint();
++    if (fill_paint) {
++        PaintRendererStatePtr renderer_state = fill_paint->getRendererState(getRenderer());
++        QtPaintRendererStatePtr paint_renderer_state = dynamic_pointer_cast<QtPaintRendererState>(renderer_state);
++        assert(paint_renderer_state);
++        if (paint_renderer_state) {
++            fill_brush = paint_renderer_state->getBrush(owner->net_fill_opacity);
++
++            if (fill_brush.style() == Qt::TexturePattern) {
++                float4 bounds = owner->getBounds();  // returns two (x,y) pairs
++
++                float w = fill_brush.textureImage().width(),
++                      h = fill_brush.textureImage().height();
++
++                float2 p1 = bounds.xy,
++                       p2 = bounds.zw,
++                       diff = p2-p1;
++
++                // Inverse orthographic matrix
++                QMatrix inv_ortho(diff.x/w,0,
++                                  0,diff.y/h,
++                                  0,0);
++
++                fill_brush.setMatrix(inv_ortho);
++            }
++        }
++    }
++
++    const PaintPtr stroke_paint = owner->getStrokePaint();
++    if (stroke_paint) {
++        PaintRendererStatePtr renderer_state = stroke_paint->getRendererState(getRenderer());
++        QtPaintRendererStatePtr paint_renderer_state = dynamic_pointer_cast<QtPaintRendererState>(renderer_state);
++        assert(paint_renderer_state);
++        if (paint_renderer_state) {
++            stroke_brush = paint_renderer_state->getBrush(owner->net_stroke_opacity);
++        }
++    }
++}
++
++void QtShapeRendererState::validate()
++{
++    if (valid) {
++        return;
++    }
++
++    // validate brushes
++    QBrush fill_brush, stroke_brush;
++    getBrushes(fill_brush, stroke_brush);
++
++    brush = fill_brush;
++
++    pen.setBrush(stroke_brush);
++    const PathStyle *style = &owner->getPath()->style;
++    pen.setWidthF(style->stroke_width);
++    pen.setCapStyle(lineCapConverter(style));
++    pen.setJoinStyle(lineJoinConverter(style));
++    pen.setMiterLimit(style->miter_limit);
++    if (style->dash_array.size() > 0) {
++        QVector<qreal> pattern;
++        int n = int(style->dash_array.size());
++        pattern.reserve(n);
++        // Qt's dash pattern is specified in units of the pens width,
++        // e.g. a dash of length 5 in width 10 is 50 pixels long.
++        for (int i = 0; i<n; i++) {
++            pattern.push_back(style->dash_array[i] / style->stroke_width);
++        }
++        // "If an odd number of values is provided,
++        if (n & 1) {
++            // then the list of values is repeated to yield an even number
++            // of values. Thus, stroke-dasharray: 5,3,2 is equivalent to
++            // stroke-dasharray: 5,3,2,5,3,2."
++            for (int i = 0; i<n; i++) {
++                pattern.push_back(style->dash_array[i] / style->stroke_width);
++            }
++        }
++        pen.setDashPattern(pattern);
++        // "The offset is measured in terms of the units used to
++        // specify the dash pattern." (so divide by stroke width).
++        pen.setDashOffset(style->dash_offset / style->stroke_width);
++    } else {
++        pen.setDashPattern(QVector<qreal>());
++    }
++
++    valid = true;
++}
++
++void QtShapeRendererState::invalidate()
++{
++    valid = false;
++}
++
++void QtShapeRendererState::draw()
++{
++    QtRendererPtr renderer = getRenderer();
++
++    // validate brushes
++    validate();
++
++    // validate the path
++    QtPathRendererStatePtr path_state = getPathRendererState();
++    path_state->validate();
++
++    extern bool doFilling, doStroking;
++    const PathStyle &style = owner->getPath()->style;
++    if (style.do_fill && doFilling) {
++        renderer->painter->fillPath(path_state->path, brush);
++    }
++    if (style.do_stroke && doStroking) {
++        // From http://qt.nokia.com/doc/4.6/qpen.html#setWidth
++        // "A line width of zero indicates a cosmetic pen. This
++        // means that the pen width is always drawn one pixel wide,
++        // independent of the transformation set on the painter."
++        //
++        // Skip zero width stroking to avoid Qt's cosmetic pen.
++        if (style.stroke_width > 0) {
++            renderer->painter->strokePath(path_state->path, pen);
++        }
++    }
++}
++
++void QtShapeRendererState::getPaths(vector<QPainterPath*>& paths)
++{
++    QtRendererPtr renderer = getRenderer();
++
++    // validate the path
++    QtPathRendererStatePtr path_state = getPathRendererState();
++    path_state->validate();
++
++    paths.push_back(&path_state->path);
++}
++
++shared_ptr<RendererState<Paint> > QtRenderer::alloc(Paint *owner)
++{
++    SolidColorPaint *solid_color_paint = dynamic_cast<SolidColorPaint*>(owner);
++    if (solid_color_paint) {
++        return QtSolidColorPaintRendererStatePtr(new QtSolidColorPaintRendererState(shared_from_this(), solid_color_paint));
++    }
++
++    LinearGradientPaint *linear_gradient_paint = dynamic_cast<LinearGradientPaint*>(owner);
++    if (linear_gradient_paint) {
++        return QtLinearGradientPaintRendererStatePtr(new QtLinearGradientPaintRendererState(shared_from_this(), linear_gradient_paint));
++    }
++
++    RadialGradientPaint *radial_gradient_paint = dynamic_cast<RadialGradientPaint*>(owner);
++    if (radial_gradient_paint) {
++        return QtRadialGradientPaintRendererStatePtr(new QtRadialGradientPaintRendererState(shared_from_this(), radial_gradient_paint));
++    }
++
++    ImagePaint *image_paint = dynamic_cast<ImagePaint*>(owner);
++    if (image_paint) {
++        return QtImagePaintRendererStatePtr(new QtImagePaintRendererState(shared_from_this(), image_paint));
++    }
++
++    assert(!"paint unsupported by Qt renderer");
++    return QtPaintRendererStatePtr();
++}
++
++void QtPaintRendererState::invalidate()
++{
++    valid = false;
++}
++
++QtSolidColorPaintRendererState::QtSolidColorPaintRendererState(RendererPtr renderer, SolidColorPaint *paint)
++    : QtPaintRendererState(renderer, paint)
++{}
++
++void QtSolidColorPaintRendererState::validate(float opacity)
++{
++    if (valid && opacity == this->opacity) {
++        return;
++    }
++    SolidColorPaint *paint = dynamic_cast<SolidColorPaint*>(owner);
++    assert(paint);
++    if (paint) {
++        QColor color;
++
++        const float4 solid_color = paint->getColor();
++        color.setRgbF(solid_color.r, solid_color.g, solid_color.b);
++        color.setAlphaF(solid_color.a * opacity);
++        brush.setColor(color);
++        brush.setStyle(Qt::SolidPattern);
++    }
++    valid = true;
++}
++
++static QGradient::Spread convert_SVG_spread_method_to_QGradientSpread(SpreadMethod v)
++{
++    switch (v) {
++    case PAD:
++        return QGradient::PadSpread;
++    case REFLECT:
++        return QGradient::ReflectSpread;
++    case REPEAT:
++        return QGradient::RepeatSpread;
++    default:
++        assert(!"bogus spread method");
++    case NONE:
++        assert(!"none spread not supported by Qt");
++        return QGradient::PadSpread;
++    }
++}
++
++QtGradientPaintRendererState::QtGradientPaintRendererState(RendererPtr renderer, GradientPaint *paint)
++    : QtPaintRendererState(renderer, paint)
++{}
++
++void QtGradientPaintRendererState::setGradientStops(QGradient &gradient, const GradientPaint *paint, float opacity)
++{
++    QVector<QGradientStop> stops;
++
++    const vector<GradientStop> &stop_array = paint->getStopArray();
++    for (vector<GradientStop>::const_iterator stop = stop_array.begin();
++        stop != stop_array.end();
++        ++stop) {
++        QColor color;
++        color.setRgbF(stop->color.r, stop->color.g, stop->color.b);
++        color.setAlphaF(stop->color.a * opacity);
++        stops.push_back(QGradientStop(stop->offset, color));
++    }
++    gradient.setStops(stops);
++}
++
++void QtGradientPaintRendererState::setGenericGradientParameters(QGradient &gradient, const GradientPaint *paint, float opacity)
++{
++    setGradientStops(gradient, paint, opacity);
++
++    if (paint->getGradientUnits() == USER_SPACE_ON_USE) {
++        gradient.setCoordinateMode(QGradient::LogicalMode);
++    } else {
++        assert(paint->getGradientUnits() == OBJECT_BOUNDING_BOX);
++        gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
++    }
++
++    gradient.setSpread(convert_SVG_spread_method_to_QGradientSpread(paint->getSpreadMethod()));
++}
++
++QtLinearGradientPaintRendererState::QtLinearGradientPaintRendererState(RendererPtr renderer, LinearGradientPaint *paint)
++    : QtGradientPaintRendererState(renderer, paint)
++{}
++
++void QtLinearGradientPaintRendererState::validate(float opacity)
++{
++    if (valid && opacity == this->opacity) {
++        return;
++    }
++    const LinearGradientPaint *paint = dynamic_cast<LinearGradientPaint*>(owner);
++    assert(paint);
++    if (paint) {
++        QLinearGradient linear_gradient(paint->getV1().x, paint->getV1().y,
++                                        paint->getV2().x, paint->getV2().y);
++
++        setGenericGradientParameters(linear_gradient, paint, opacity);
++
++        brush = QBrush(linear_gradient);
++        const float3x3 &gradient_transform = paint->getGradientTransform();
++        brush.setMatrix(QMatrix(gradient_transform[0][0],gradient_transform[1][0],
++                        gradient_transform[0][1],gradient_transform[1][1],
++                        gradient_transform[0][2],gradient_transform[1][2]));
++        brush.setStyle(Qt::LinearGradientPattern);
++    }
++    valid = true;
++}
++
++QtRadialGradientPaintRendererState::QtRadialGradientPaintRendererState(RendererPtr renderer, RadialGradientPaint *paint)
++    : QtGradientPaintRendererState(renderer, paint)
++{}
++
++void QtRadialGradientPaintRendererState::validate(float opacity)
++{
++    if (valid && opacity == this->opacity) {
++        return;
++    }
++    const RadialGradientPaint *paint = dynamic_cast<RadialGradientPaint*>(owner);
++    assert(paint);
++    if (paint) {
++        QRadialGradient radial_gradient(paint->getCenter().x, paint->getCenter().y,
++                                        paint->getRadius(),
++                                        paint->getFocalPoint().x, paint->getFocalPoint().y);
++
++        setGenericGradientParameters(radial_gradient, paint, opacity);
++
++        brush = QBrush(radial_gradient);
++        const float3x3 &gradient_transform = paint->getGradientTransform();
++        brush.setMatrix(QMatrix(gradient_transform[0][0],gradient_transform[1][0],
++                                gradient_transform[0][1],gradient_transform[1][1],
++                                gradient_transform[0][2],gradient_transform[1][2]));
++        brush.setStyle(Qt::RadialGradientPattern);
++    }
++    valid = true;
++}
++
++// QtImagePaintRendererState
++
++QtImagePaintRendererState::QtImagePaintRendererState(RendererPtr renderer, ImagePaint *paint)
++    : QtPaintRendererState(renderer, paint)
++{
++    const int width = paint->image->width,
++              height = paint->image->height;
++
++    image = QImage(width, height, QImage::Format_ARGB32_Premultiplied);
++
++    unsigned int *argb = reinterpret_cast<unsigned int *>(image.bits());
++    const RasterImage::Pixel *pixels = paint->image->pixels;
++    for (int i=0; i<height; i++) {
++        for (int j=0; j<width; j++) {
++            *argb = (pixels->a << 24) | (pixels->r << 16) | (pixels->g << 8) | (pixels->b << 0);
++            argb++;
++            pixels++;
++        }
++    }
++}
++
++void QtImagePaintRendererState::validate(float opacity)
++{
++    if (valid && opacity == this->opacity) {
++        return;
++    }
++    const ImagePaint *paint = dynamic_cast<ImagePaint*>(owner);
++    assert(paint);
++    if (paint) {
++        setOpacity(opacity);
++        // XXX should multiply image by opacity here??
++        brush.setTextureImage(image);
++    }
++    valid = true;
++}
++
++#endif // USE_QT
+diff --git a/nvpr_examples/nvpr_svg/qt/renderer_qt.hpp b/nvpr_examples/nvpr_svg/qt/renderer_qt.hpp
+index 97f2f63..237ffad 100644
+--- a/nvpr_examples/nvpr_svg/qt/renderer_qt.hpp
++++ b/nvpr_examples/nvpr_svg/qt/renderer_qt.hpp
+@@ -1,182 +1,184 @@
+-
+-/* renderer_qt.hpp - Qt renderer class. */
+-
+-#ifndef __renderer_qt_hpp__
+-#define __renderer_qt_hpp__
+-
+-#if defined(_MSC_VER) && (_MSC_VER >= 1020)
+-# pragma once
+-#endif
+-
+-#include "nvpr_svg_config.h"  // configure path renderers to use
+-
+-#if USE_QT
+-
+-#include "path.hpp"
+-#include "scene.hpp"
+-
+-// Qt 4.5 headers
+-#include <QBrush>  // http://doc.trolltech.com/4.5/qbrush.html
+-#include <QPen>  // http://doc.trolltech.com/4.5/qbrush.html
+-#include <QImage>  // http://doc.trolltech.com/4.5/qimage.html
+-#include <QTransform>  // http://doc.trolltech.com/4.5/qtransform.html
+-#include <QPainter>  // http://doc.trolltech.com/4.5/qpainter.html
+-#include <QPainterPath>  // http://doc.trolltech.com/4.5/qpainterpath.html
+-
+-typedef shared_ptr<struct QtRenderer> QtRendererPtr;
+-
+-typedef shared_ptr<struct QtPathRendererState> QtPathRendererStatePtr;
+-typedef shared_ptr<struct QtShapeRendererState> QtShapeRendererStatePtr;
+-
+-typedef shared_ptr<struct QtSolidColorPaintRendererState> QtSolidColorPaintRendererStatePtr;
+-typedef shared_ptr<struct QtLinearGradientPaintRendererState> QtLinearGradientPaintRendererStatePtr;
+-typedef shared_ptr<struct QtRadialGradientPaintRendererState> QtRadialGradientPaintRendererStatePtr;
+-typedef shared_ptr<struct QtImagePaintRendererState> QtImagePaintRendererStatePtr;
+-
+-typedef shared_ptr<QImage> QImagePtr;
+-typedef shared_ptr<QPainter> QPainterPtr;
+-
+-struct QtRenderer : GLBlitRenderer {
+-
+-    QImagePtr image;
+-    QPainterPtr painter;
+-
+-    QtRenderer() { }
+-
+-    void configureSurface(int width, int height);
+-    void shutdown();
+-
+-    void clear(float3 clear_color);
+-    void setView(float4x4 view);
+-    VisitorPtr makeVisitor();
+-    void copyImageToWindow();
+-    const char *getWindowTitle();
+-    const char *getName();
+-
+-    shared_ptr<RendererState<Shape> > alloc(Shape *owner);
+-    shared_ptr<RendererState<Path> > alloc(Path *owner);
+-    shared_ptr<RendererState<Paint> > alloc(Paint *owner);
+-};
+-
+-template <typename T>
+-struct QtRendererState : SpecificRendererState<T,QtRenderer> {
+-    typedef T *OwnerPtr;  // intentionally not a SharedPtr
+-    QtRendererState(RendererPtr renderer_, OwnerPtr owner_) 
+-        : SpecificRendererState<T,QtRenderer>(renderer_, owner_)
+-    {}
+-};
+-
+-struct QtShapeRendererState : QtRendererState<Shape> {
+-    bool valid;
+-    QBrush brush;
+-    QPen pen;
+-
+-    QtShapeRendererState(RendererPtr renderer, Shape *shape)
+-        : QtRendererState<Shape>(renderer, shape)
+-        , valid(false)
+-    {}
+-
+-    ~QtShapeRendererState()
+-    {}
+-
+-    QtPathRendererStatePtr getPathRendererState() {
+-        PathRendererStatePtr path_state = owner->getPath()->getRendererState(getRenderer());
+-        QtPathRendererStatePtr qt_path_state = dynamic_pointer_cast<QtPathRendererState>(path_state);
+-        return qt_path_state;
+-    }
+-
+-    void draw();
+-    void getPaths(vector<QPainterPath*>& paths);
+-    void validate();
+-    void invalidate();
+-    void getBrushes(QBrush &fill_brush, QBrush &stroke_brush);
+-};
+-
+-struct QtPathRendererState : RendererState<Path> {
+-    bool valid;
+-    QPainterPath path;
+-
+-    void validate();
+-    void invalidate();
+-
+-    QtPathRendererState(RendererPtr renderer, Path *owner)
+-        : RendererState<Path>(renderer, owner)
+-        , valid(false)
+-    { }
+-
+-    QtRendererPtr getRenderer() {
+-        RendererPtr locked_renderer = renderer.lock();
+-        assert(locked_renderer);
+-        QtRendererPtr qt = dynamic_pointer_cast<QtRenderer>(locked_renderer);
+-        assert(qt);
+-        return qt;
+-    }
+-};
+-
+-typedef shared_ptr<struct QtPaintRendererState> QtPaintRendererStatePtr;
+-struct QtPaintRendererState : QtRendererState<Paint> {
+-protected:
+-    QBrush brush;
+-    float opacity;
+-    bool valid;
+-
+-public:
+-    QtPaintRendererState(RendererPtr renderer, Paint *paint)
+-        : QtRendererState<Paint>(renderer, paint)
+-        , brush(Qt::NoBrush)
+-        , opacity(1.0)
+-        , valid(false)
+-    {}
+-
+-    virtual ~QtPaintRendererState()
+-    {}
+-
+-    virtual void validate(float opacity) = 0;
+-    void invalidate();
+-
+-    void setOpacity(float new_opacity) {
+-        if (new_opacity != opacity) {
+-            opacity = new_opacity;
+-            valid = false;
+-        }
+-    }
+-
+-    QBrush getBrush(float opacity) {
+-        validate(opacity);
+-        return brush;
+-    }
+-};
+-
+-struct QtSolidColorPaintRendererState : QtPaintRendererState {
+-    QtSolidColorPaintRendererState(RendererPtr renderer, SolidColorPaint *paint);
+-    void validate(float opacity);
+-};
+-
+-typedef shared_ptr<struct QtGradientPaintRendererState> QtGradientPaintRendererStatePtr;
+-struct QtGradientPaintRendererState : QtPaintRendererState {
+-protected:
+-    QtGradientPaintRendererState(RendererPtr renderer, GradientPaint *paint);
+-    void setGradientStops(QGradient &gradient, const GradientPaint *paint, float opacity);
+-    void setGenericGradientParameters(QGradient &, const GradientPaint *paint, float opacity);
+-};
+-
+-struct QtLinearGradientPaintRendererState : QtGradientPaintRendererState {
+-    QtLinearGradientPaintRendererState(RendererPtr renderer, LinearGradientPaint *paint);
+-    void validate(float opacity);
+-};
+-
+-struct QtRadialGradientPaintRendererState : QtGradientPaintRendererState {
+-    QtRadialGradientPaintRendererState(RendererPtr renderer, RadialGradientPaint *paint);
+-    void validate(float opacity);
+-};
+-
+-struct QtImagePaintRendererState : QtPaintRendererState {
+-    QImage image;  // QImage(pixels, width, height, QImage::Format_ARGB32) 
+-
+-    QtImagePaintRendererState(RendererPtr renderer, ImagePaint *paint);
+-    void validate(float opacity);
+-};
+-
+-#endif // USE_QT
+-
+-#endif // __renderer_qt_hpp__
++
++/* renderer_qt.hpp - Qt renderer class. */
++
++#ifndef __renderer_qt_hpp__
++#define __renderer_qt_hpp__
++
++#if defined(_MSC_VER) && (_MSC_VER >= 1020)
++# pragma once
++#endif
++
++#include "nvpr_svg_config.h"  // configure path renderers to use
++
++#if USE_QT
++
++#include "path.hpp"
++#include "scene.hpp"
++
++// Qt 4.5 headers
++#include <QBrush>  // http://doc.trolltech.com/4.5/qbrush.html
++#include <QPen>  // http://doc.trolltech.com/4.5/qbrush.html
++#include <QImage>  // http://doc.trolltech.com/4.5/qimage.html
++#include <QTransform>  // http://doc.trolltech.com/4.5/qtransform.html
++#include <QPainter>  // http://doc.trolltech.com/4.5/qpainter.html
++#include <QPainterPath>  // http://doc.trolltech.com/4.5/qpainterpath.html
++#include <QGLPixelBuffer>
++
++typedef shared_ptr<struct QtRenderer> QtRendererPtr;
++
++typedef shared_ptr<struct QtPathRendererState> QtPathRendererStatePtr;
++typedef shared_ptr<struct QtShapeRendererState> QtShapeRendererStatePtr;
++
++typedef shared_ptr<struct QtSolidColorPaintRendererState> QtSolidColorPaintRendererStatePtr;
++typedef shared_ptr<struct QtLinearGradientPaintRendererState> QtLinearGradientPaintRendererStatePtr;
++typedef shared_ptr<struct QtRadialGradientPaintRendererState> QtRadialGradientPaintRendererStatePtr;
++typedef shared_ptr<struct QtImagePaintRendererState> QtImagePaintRendererStatePtr;
++
++typedef shared_ptr<QGLPixelBuffer> QImagePtr;
++typedef shared_ptr<QPainter> QPainterPtr;
++
++struct QtRenderer : GLBlitRenderer {
++    QImagePtr image;
++    QPainterPtr painter;
++    GLint dynamicTexture;
++    bool hasDynamicTextureUpdate;
++
++    QtRenderer() { }
++
++    void configureSurface(int width, int height);
++    void shutdown();
++
++    void clear(float3 clear_color);
++    void setView(float4x4 view);
++    VisitorPtr makeVisitor();
++    void copyImageToWindow();
++    const char *getWindowTitle();
++    const char *getName();
++
++    shared_ptr<RendererState<Shape> > alloc(Shape *owner);
++    shared_ptr<RendererState<Path> > alloc(Path *owner);
++    shared_ptr<RendererState<Paint> > alloc(Paint *owner);
++};
++
++template <typename T>
++struct QtRendererState : SpecificRendererState<T,QtRenderer> {
++    typedef T *OwnerPtr;  // intentionally not a SharedPtr
++    QtRendererState(RendererPtr renderer_, OwnerPtr owner_) 
++        : SpecificRendererState<T,QtRenderer>(renderer_, owner_)
++    {}
++};
++
++struct QtShapeRendererState : QtRendererState<Shape> {
++    bool valid;
++    QBrush brush;
++    QPen pen;
++
++    QtShapeRendererState(RendererPtr renderer, Shape *shape)
++        : QtRendererState<Shape>(renderer, shape)
++        , valid(false)
++    {}
++
++    ~QtShapeRendererState()
++    {}
++
++    QtPathRendererStatePtr getPathRendererState() {
++        PathRendererStatePtr path_state = owner->getPath()->getRendererState(getRenderer());
++        QtPathRendererStatePtr qt_path_state = dynamic_pointer_cast<QtPathRendererState>(path_state);
++        return qt_path_state;
++    }
++
++    void draw();
++    void getPaths(vector<QPainterPath*>& paths);
++    void validate();
++    void invalidate();
++    void getBrushes(QBrush &fill_brush, QBrush &stroke_brush);
++};
++
++struct QtPathRendererState : RendererState<Path> {
++    bool valid;
++    QPainterPath path;
++
++    void validate();
++    void invalidate();
++
++    QtPathRendererState(RendererPtr renderer, Path *owner)
++        : RendererState<Path>(renderer, owner)
++        , valid(false)
++    { }
++
++    QtRendererPtr getRenderer() {
++        RendererPtr locked_renderer = renderer.lock();
++        assert(locked_renderer);
++        QtRendererPtr qt = dynamic_pointer_cast<QtRenderer>(locked_renderer);
++        assert(qt);
++        return qt;
++    }
++};
++
++typedef shared_ptr<struct QtPaintRendererState> QtPaintRendererStatePtr;
++struct QtPaintRendererState : QtRendererState<Paint> {
++protected:
++    QBrush brush;
++    float opacity;
++    bool valid;
++
++public:
++    QtPaintRendererState(RendererPtr renderer, Paint *paint)
++        : QtRendererState<Paint>(renderer, paint)
++        , brush(Qt::NoBrush)
++        , opacity(1.0)
++        , valid(false)
++    {}
++
++    virtual ~QtPaintRendererState()
++    {}
++
++    virtual void validate(float opacity) = 0;
++    void invalidate();
++
++    void setOpacity(float new_opacity) {
++        if (new_opacity != opacity) {
++            opacity = new_opacity;
++            valid = false;
++        }
++    }
++
++    QBrush getBrush(float opacity) {
++        validate(opacity);
++        return brush;
++    }
++};
++
++struct QtSolidColorPaintRendererState : QtPaintRendererState {
++    QtSolidColorPaintRendererState(RendererPtr renderer, SolidColorPaint *paint);
++    void validate(float opacity);
++};
++
++typedef shared_ptr<struct QtGradientPaintRendererState> QtGradientPaintRendererStatePtr;
++struct QtGradientPaintRendererState : QtPaintRendererState {
++protected:
++    QtGradientPaintRendererState(RendererPtr renderer, GradientPaint *paint);
++    void setGradientStops(QGradient &gradient, const GradientPaint *paint, float opacity);
++    void setGenericGradientParameters(QGradient &, const GradientPaint *paint, float opacity);
++};
++
++struct QtLinearGradientPaintRendererState : QtGradientPaintRendererState {
++    QtLinearGradientPaintRendererState(RendererPtr renderer, LinearGradientPaint *paint);
++    void validate(float opacity);
++};
++
++struct QtRadialGradientPaintRendererState : QtGradientPaintRendererState {
++    QtRadialGradientPaintRendererState(RendererPtr renderer, RadialGradientPaint *paint);
++    void validate(float opacity);
++};
++
++struct QtImagePaintRendererState : QtPaintRendererState {
++    QImage image;  // QImage(pixels, width, height, QImage::Format_ARGB32) 
++
++    QtImagePaintRendererState(RendererPtr renderer, ImagePaint *paint);
++    void validate(float opacity);
++};
++
++#endif // USE_QT
++
++#endif // __renderer_qt_hpp__
+-- 
+1.7.5.4
+
