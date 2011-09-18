@@ -17,7 +17,7 @@ You can start qt_svg by simply typing
 After applying a patch to nvpr_svg you can start
 it as:
 
-   ./nvpr_svg -nosync -svg svg/complex/tiger.svg -spin -animate
+    ./nvpr_svg -nosync -svg svg/complex/tiger.svg -spin -animate
 
 right click on the window select
 "Toggle Cairo/Qt software rendering"
